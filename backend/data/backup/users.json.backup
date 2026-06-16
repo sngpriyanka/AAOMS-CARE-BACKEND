@@ -1,0 +1,41 @@
+[
+  {
+    "id": "1b4a0b42-c279-4941-9515-14e60fc9348f",
+    "email": "customer@example.com",
+    "password": "$2a$10$B8GpscGOGA8bHElYug1jiO5AC6Sqaa/ufX1saLHUwkFFasit95JBG",
+    "name": "John Doe",
+    "role": "customer",
+    "phone": "9876543210",
+    "address": "123 Main Street",
+    "city": "Mumbai",
+    "state": "Maharashtra",
+    "zipcode": "400001",
+    "createdAt": "2026-04-20T10:39:12.508Z"
+  },
+  {
+    "id": "99fdf5bc-1935-41d3-9150-29d42a201d74",
+    "email": "admin@example.com",
+    "password": "$2a$10$licqjgPPJP5PMluf9qpTluPVE3fYCRfaCEtO8Rij0beTKS2GTuGVC",
+    "name": "Admin User",
+    "role": "admin",
+    "phone": "9876543211",
+    "address": "456 Admin Ave",
+    "city": "Delhi",
+    "state": "Delhi",
+    "zipcode": "110001",
+    "createdAt": "2026-04-20T10:39:12.564Z"
+  },
+  {
+    "id": "2ab7fc72-77ae-4599-8144-08e2e9c171b3",
+    "email": "super@example.com",
+    "password": "$2a$10$uplpf5poM9Op32pK2RO9m.dDNdOUYgttUAZ7HgtzF5nzDtPycrFgi",
+    "name": "Super Admin",
+    "role": "super_admin",
+    "phone": "9876543212",
+    "address": "789 Super Lane",
+    "city": "Bangalore",
+    "state": "Karnataka",
+    "zipcode": "560001",
+    "createdAt": "2026-04-20T10:39:12.619Z"
+  }
+]

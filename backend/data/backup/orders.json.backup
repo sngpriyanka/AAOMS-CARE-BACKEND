@@ -1,0 +1,61 @@
+[
+  {
+    "id": "2e7dd61a-f6f8-449b-a2f0-ab15ac12c0df",
+    "userId": "1b4a0b42-c279-4941-9515-14e60fc9348f",
+    "items": [
+      {
+        "id": "3b7ff3f3-3a24-4046-a861-59335e24d17e_1776681552619",
+        "productId": "3b7ff3f3-3a24-4046-a861-59335e24d17e",
+        "quantity": 2,
+        "size": "M",
+        "color": "Burnt Sienna",
+        "price": 1275,
+        "customization": null
+      },
+      {
+        "id": "0b3e3417-ce33-431c-9ee8-2c580cd1cebc_1776681552620",
+        "productId": "0b3e3417-ce33-431c-9ee8-2c580cd1cebc",
+        "quantity": 1,
+        "size": "One Size",
+        "color": "White",
+        "price": 899,
+        "customization": {
+          "type": "embroidery_name",
+          "value": "John Doe",
+          "price": 200
+        }
+      }
+    ],
+    "shippingAddress": "123 Main Street, Mumbai",
+    "paymentMethod": "card",
+    "total": 3649,
+    "status": "delivered",
+    "paymentStatus": "completed",
+    "trackingNumber": "BT1776681552619001",
+    "createdAt": "2026-04-13T10:39:12.619Z",
+    "updatedAt": "2026-04-20T10:39:12.619Z"
+  },
+  {
+    "id": "712bf2cd-cb0e-4377-84a6-7d4dee5260f6",
+    "userId": "1b4a0b42-c279-4941-9515-14e60fc9348f",
+    "items": [
+      {
+        "id": "3b7ff3f3-3a24-4046-a861-59335e24d17e_1776681552619",
+        "productId": "3b7ff3f3-3a24-4046-a861-59335e24d17e",
+        "quantity": 2,
+        "size": "M",
+        "color": "Burnt Sienna",
+        "price": 1275,
+        "customization": null
+      }
+    ],
+    "shippingAddress": "123 Main Street, Mumbai",
+    "paymentMethod": "card",
+    "total": 2550,
+    "status": "processing",
+    "paymentStatus": "completed",
+    "trackingNumber": "BT1776681552619002",
+    "createdAt": "2026-04-18T10:39:12.619Z",
+    "updatedAt": "2026-04-20T10:39:12.619Z"
+  }
+]

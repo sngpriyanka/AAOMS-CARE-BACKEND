@@ -1,0 +1,484 @@
+const { Pool } = require('pg');
+
+// PostgreSQL / Neon Connection
+let pool = null;
+
+const connectPostgres = async () => {
+  try {
+    const connectionString = process.env.DATABASE_URL 
+      || process.env.POSTGRES_URI 
+      || process.env.NEON_DATABASE_URL 
+      || process.env.POSTGRES_URL;
+
+    if (!connectionString) {
+      console.error('❌ DATABASE_URL (or POSTGRES_URI / NEON_DATABASE_URL) not set in .env file');
+      console.error('   Get your connection string from Neon dashboard:');
+      console.error('   https://console.neon.tech/');
+      process.env.DATABASE_TYPE = 'json';
+      return null;
+    }
+
+    // Neon requires SSL
+    const isNeon = connectionString.includes('neon.tech') || connectionString.includes('neon.database');
+
+    pool = new Pool({
+      connectionString,
+      ssl: isNeon || connectionString.includes('sslmode=require') 
+        ? { rejectUnauthorized: false } 
+        : false,
+      max: 10,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
+    });
+
+    // Test the connection
+    const client = await pool.connect();
+    const result = await client.query('SELECT NOW() as now, current_database() as db');
+    client.release();
+
+    console.log('✅ Connected to PostgreSQL (Neon) Successfully!');
+    console.log(`📊 Database: ${result.rows[0].db}`);
+    console.log(`🕒 Server time: ${result.rows[0].now}`);
+
+    // Initialize tables (idempotent)
+    await initializeTables();
+
+    // Handle pool errors
+    pool.on('error', (err) => {
+      console.error('❌ Unexpected PostgreSQL pool error:', err.message);
+    });
+
+    return pool;
+  } catch (error) {
+    console.error('❌ PostgreSQL Connection Failed!');
+    console.error('Error:', error.message);
+    console.log('\n📝 Troubleshooting:');
+    console.log('1. Check DATABASE_URL in .env file');
+    console.log('2. Make sure your Neon project is active (not suspended)');
+    console.log('3. Verify the connection string includes ?sslmode=require');
+    console.log('4. Check IP allowlist in Neon if you have restrictions');
+    console.log('\n💾 Falling back to JSON file-based database...\n');
+
+    process.env.DATABASE_TYPE = 'json';
+    if (pool) {
+      await pool.end().catch(() => {});
+      pool = null;
+    }
+    return null;
+  }
+};
+
+const initializeTables = async () => {
+  if (!pool) return;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Core tables - using TEXT for id to match existing UUID string pattern everywhere in the app
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        password TEXT,  -- nullable for Google OAuth users (they don't have a local password)
+        name TEXT NOT NULL,
+        role TEXT DEFAULT 'customer',
+        phone TEXT,
+        address TEXT,
+        city TEXT,
+        state TEXT,
+        zipcode TEXT,
+        is_active BOOLEAN DEFAULT true,
+        google_auth BOOLEAN DEFAULT false,
+        reset_token TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    // Add profile extension columns (idempotent for existing DBs)
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS birthday TEXT;`).catch(() => {});
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS gender TEXT;`).catch(() => {});
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_picture TEXT;`).catch(() => {});
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions JSONB DEFAULT '[]';`).catch(() => {});
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS google_auth BOOLEAN DEFAULT false;`).catch(() => {});
+    // Make password nullable for Google OAuth users (existing DBs)
+    await client.query(`ALTER TABLE users ALTER COLUMN password DROP NOT NULL;`).catch(() => {});
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS admins (
+        id TEXT PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        name TEXT NOT NULL,
+        role TEXT DEFAULT 'admin',
+        phone TEXT,
+        permissions JSONB DEFAULT '[]',
+        is_active BOOLEAN DEFAULT true,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    // Ensure role column exists for existing databases (idempotent)
+    await client.query(`
+      ALTER TABLE admins 
+      ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'admin';
+    `);
+
+    // Support for phone (used in admin profiles) and permissions (super-admin assigned)
+    await client.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS phone TEXT;`).catch(() => {});
+    await client.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS permissions JSONB DEFAULT '[]';`).catch(() => {});
+    await client.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();`).catch(() => {});
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS products (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        slug TEXT UNIQUE,
+        price NUMERIC NOT NULL,
+        original_price NUMERIC,
+        description JSONB,
+        sub_description TEXT,
+        product_information TEXT,
+        category TEXT NOT NULL,
+        image TEXT,
+        images JSONB DEFAULT '[]',
+        sizes JSONB DEFAULT '[]',
+        colors JSONB DEFAULT '[]',
+        size_chart JSONB,
+        quick_dry BOOLEAN DEFAULT false,
+        is_active BOOLEAN DEFAULT true,
+        created_by TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    // Idempotent migration for products (created_by was added for audit in createProduct)
+    await client.query(`
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS created_by TEXT;
+    `);
+    await client.query(`
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS sub_description TEXT;
+    `).catch(() => {});
+    await client.query(`
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS product_information TEXT;
+    `).catch(() => {});
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS orders (
+        id TEXT PRIMARY KEY,
+        order_id TEXT UNIQUE NOT NULL,
+        user_id TEXT,
+        items JSONB NOT NULL DEFAULT '[]',
+        subtotal NUMERIC NOT NULL,
+        shipping_cost NUMERIC DEFAULT 0,
+        logo_charge NUMERIC DEFAULT 0,
+        total NUMERIC NOT NULL,
+        amount NUMERIC DEFAULT 0,
+        status TEXT DEFAULT 'pending',
+        payment_method TEXT NOT NULL,
+        payment_status TEXT DEFAULT 'pending',
+        shipping_status TEXT DEFAULT 'not-shipped',
+        shipping_address JSONB,
+        transaction_id TEXT,
+        notes TEXT,
+        tracking_number TEXT,
+        payment_gateway TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    // Idempotent migration: added transaction_id for payment gateway refs (eSewa ref_id, Khalti pidx, etc.)
+    await client.query(`
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS transaction_id TEXT;
+    `);
+
+    // Idempotent migrations for additional order columns used in creation
+    await client.query(`
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS notes TEXT;
+    `);
+    await client.query(`
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS tracking_number TEXT;
+    `);
+    await client.query(`
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_gateway TEXT;
+    `);
+    await client.query(`
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS amount NUMERIC DEFAULT 0;
+    `);
+    await client.query(`
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS logo_charge NUMERIC DEFAULT 0;
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS carts (
+        id TEXT PRIMARY KEY,
+        user_id TEXT UNIQUE NOT NULL,
+        items JSONB DEFAULT '[]',
+        total NUMERIC DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS addresses (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        phone TEXT NOT NULL,
+        email TEXT,
+        address TEXT NOT NULL,
+        city TEXT NOT NULL,
+        state TEXT NOT NULL,
+        pincode TEXT,
+        zipcode TEXT,
+        district TEXT,
+        landmark TEXT,
+        is_default BOOLEAN DEFAULT false,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS wishlists (
+        id TEXT PRIMARY KEY,
+        user_id TEXT UNIQUE NOT NULL,
+        items JSONB DEFAULT '[]',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS payments (
+        id TEXT PRIMARY KEY,
+        order_id TEXT UNIQUE NOT NULL,
+        user_id TEXT NOT NULL,
+        amount NUMERIC NOT NULL,
+        method TEXT NOT NULL,
+        status TEXT DEFAULT 'pending',
+        transaction_id TEXT,
+        metadata JSONB,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS pending_payments (
+        id TEXT PRIMARY KEY,
+        purchase_order_id TEXT UNIQUE NOT NULL,
+        payment_token TEXT NOT NULL,
+        payment_jwt TEXT,
+        amount NUMERIC NOT NULL,
+        user_id TEXT,
+        items JSONB DEFAULT '[]',
+        shipping_address JSONB,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    // Idempotent migration: added payment_jwt for the new signed-JWT security model used by eSewa/Khalti initiators.
+    // The DB stores the JWT (self-contained proof) + snapshot data (items/shipping) for one-time consumption on verify.
+    await client.query(`
+      ALTER TABLE pending_payments ADD COLUMN IF NOT EXISTS payment_jwt TEXT;
+    `);
+
+    // Idempotent migration: ensure updated_at column exists (adapter always injects it on create/update for pending payments)
+    await client.query(`
+      ALTER TABLE pending_payments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS instagram_feeds (
+        id TEXT PRIMARY KEY,
+        image TEXT NOT NULL,
+        link TEXT NOT NULL,
+        alt TEXT DEFAULT 'Instagram post',
+        is_reel BOOLEAN DEFAULT false,
+        sort_order INTEGER DEFAULT 0,
+        is_active BOOLEAN DEFAULT true,
+        created_by TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    // Add created_by for existing installs (idempotent)
+    await client.query(`
+      ALTER TABLE instagram_feeds ADD COLUMN IF NOT EXISTS created_by TEXT;
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS activity_logs (
+        id TEXT PRIMARY KEY,
+        action TEXT NOT NULL,
+        by TEXT,
+        target TEXT,
+        details TEXT,
+        timestamp TIMESTAMPTZ DEFAULT NOW(),
+        ip_address TEXT,
+        user_id TEXT,
+        metadata JSONB,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    // Idempotent migrations for older installs that used only "timestamp" column
+    await client.query(`ALTER TABLE activity_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();`).catch(() => {});
+    await client.query(`ALTER TABLE activity_logs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();`).catch(() => {});
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS banners (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        url TEXT NOT NULL,
+        public_id TEXT,
+        pages JSONB DEFAULT '["home"]',
+        link TEXT DEFAULT '/collection',
+        title TEXT,
+        subtitle TEXT,
+        is_active BOOLEAN DEFAULT true,
+        created_by TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    // Idempotent migration for existing databases (added created_by for audit)
+    await client.query(`
+      ALTER TABLE banners ADD COLUMN IF NOT EXISTS created_by TEXT;
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS reviews (
+        id TEXT PRIMARY KEY,
+        product_id TEXT NOT NULL,
+        product_name TEXT,
+        user_id TEXT,
+        name TEXT NOT NULL,
+        email TEXT NOT NULL,
+        rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+        title TEXT,
+        review TEXT NOT NULL,
+        date TEXT,
+        verified BOOLEAN DEFAULT false,
+        helpful INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'pending',
+        images JSONB DEFAULT '[]',
+        size TEXT,
+        location TEXT,
+        created_at TEXT DEFAULT TO_CHAR(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+        updated_at TEXT
+      );
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id TEXT PRIMARY KEY,
+        user_id TEXT,
+        type TEXT DEFAULT 'system',
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        link TEXT DEFAULT '',
+        read BOOLEAN DEFAULT false,
+        created_by TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    // Contact Us messages (from public form) - admin managed with reply
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS contact_messages (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        email TEXT NOT NULL,
+        phone TEXT,
+        subject TEXT,
+        message TEXT NOT NULL,
+        order_number TEXT,
+        status TEXT DEFAULT 'unread',
+        reply TEXT,
+        replied_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_contact_messages_status ON contact_messages(status);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_contact_messages_email ON contact_messages(email);`);
+
+    // Ensure order_number column exists for older DBs (idempotent)
+    await client.query(`ALTER TABLE contact_messages ADD COLUMN IF NOT EXISTS order_number TEXT;`).catch(() => {});
+
+    // Helpful indexes
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_admins_email ON admins(email);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_products_slug ON products(slug);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_orders_order_id ON orders(order_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_carts_user_id ON carts(user_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_addresses_user_id ON addresses(user_id);`);
+
+    // Add new columns for hierarchical address (Region/City/District + Landmark)
+    await client.query(`ALTER TABLE addresses ADD COLUMN IF NOT EXISTS district TEXT;`).catch(() => {});
+    await client.query(`ALTER TABLE addresses ADD COLUMN IF NOT EXISTS landmark TEXT;`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_wishlists_user_id ON wishlists(user_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_payments_order_id ON payments(order_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_pending_payments_order ON pending_payments(purchase_order_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_pending_payments_expires ON pending_payments(expires_at);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_reviews_product ON reviews(product_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_activity_logs_created_at ON activity_logs(created_at);`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_activity_logs_by ON activity_logs(by);`).catch(() => {});
+
+    // Subscribers for footer newsletter (email list)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS subscribers (
+        id TEXT PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        is_active BOOLEAN DEFAULT true,
+        source TEXT DEFAULT 'footer',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_subscribers_email ON subscribers(email);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_subscribers_active ON subscribers(is_active);`);
+
+    await client.query('COMMIT');
+    console.log('✅ PostgreSQL tables initialized (or already existed).');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('⚠️  Error initializing PostgreSQL tables:', error.message);
+    // Don't fail hard — tables may partially exist
+  } finally {
+    client.release();
+  }
+};
+
+const getPool = () => pool;
+
+const closePostgres = async () => {
+  if (pool) {
+    await pool.end();
+    pool = null;
+    console.log('✅ PostgreSQL pool closed');
+  }
+};
+
+module.exports = {
+  connectPostgres,
+  getPool,
+  closePostgres,
+  initializeTables
+};

@@ -1,0 +1,15 @@
+[
+  {
+    "userId": "ee3ff312-a9a3-4a96-acd4-2517153388d6",
+    "name": "Sushant Mahato",
+    "address": "Dhangadhimai-3, siraha",
+    "city": "Dhangadhimai",
+    "state": "Madhesh Pradesh",
+    "pincode": "123",
+    "phone": "9824763981",
+    "isDefault": true,
+    "id": "ec03cf79-d04f-4758-9f69-f8393f9c17dc",
+    "createdAt": "2026-04-12T16:32:15.023Z",
+    "updatedAt": "2026-04-14T06:52:11.861Z"
+  }
+]

@@ -1,0 +1,46 @@
+# ==================== ENVIRONMENT & SECRETS ====================
+.env
+.env.local
+.env.*.local
+
+# ==================== NODE ====================
+node_modules/
+package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+
+# ==================== IDE & EDITOR ====================
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.DS_Store
+.project
+.classpath
+.c9/
+*.sublime-workspace
+.code-workspace
+
+# ==================== BUILD & OUTPUT ====================
+dist/
+build/
+coverage/
+.nyc_output/
+
+# ==================== DATA & LOGS ====================
+data/*.json
+!data/.gitkeep
+logs/
+*.log
+
+# ==================== MISC ====================
+.cache/
+.env.*.swp
+*.pid
+.pnp
+.pnp.js
+
