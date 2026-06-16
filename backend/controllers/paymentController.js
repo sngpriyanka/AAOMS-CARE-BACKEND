@@ -758,7 +758,7 @@ const initiateKhaltiEpayment = async (req, res) => {
       website_url,
       amount,
       purchase_order_id,
-      purchase_order_name = 'Bombay Trooper Order',
+      purchase_order_name = 'AAOMS Order',
       customer_info = {}
     } = req.body;
 

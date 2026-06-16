@@ -8,6 +8,37 @@ dotenv.config();
 
 const app = express();
 
+//=======================CORS Configuration========================
+const cors = require('cors');
+
+const allowedOrigins = [
+  'http://localhost:3000',                    // Local development
+  'https://aaoms.onrender.com',               // Backend itself (if needed)
+  'https://your-frontend-service.onrender.com' // ← CHANGE THIS to your actual frontend URL
+];
+
+// If you want to allow all subdomains of onrender.com (easier during testing)
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, Postman)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,           // Important for cookies, auth headers
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+};
+
+app.use(cors(corsOptions));
+
+//===================================================================================
+
+
 // ==================== Environment Variable Validation ====================
 const requiredEnvVars = ['JWT_SECRET'];
 const missingEnvVars = requiredEnvVars.filter(v => !process.env[v]);
@@ -218,7 +249,7 @@ app.use((req, res, next) => {
 app.get('/api/health', (req, res) => {
   res.json({ 
     success: true,
-    message: 'Bombay Trooper Backend is Running!',
+    message: 'AAOMS Backend is Running!',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
     database: dbConnected

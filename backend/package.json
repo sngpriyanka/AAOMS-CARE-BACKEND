@@ -1,7 +1,7 @@
 {
   "name": "aaxoms-backend",
   "version": "1.0.0",
-  "description": "Backend API for Bombay Trooper E-commerce Platform",
+  "description": "Backend API for AAOMS E-commerce Platform",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -12,7 +12,7 @@
     "aaxoms",
     "api"
   ],
-  "author": "Bombay Trooper",
+  "author": "AAOMS",
   "license": "ISC",
   "dependencies": {
     "bcryptjs": "^2.4.3",
