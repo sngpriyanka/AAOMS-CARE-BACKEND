@@ -296,6 +296,27 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/contact', contactRoutes);
 
+// ==================== Root Route ====================
+app.get('/', (req, res) => {
+  res.json({
+    success: true,
+    message: "AAOMS Backend API is Running",
+    version: "1.0",
+    documentation: "/api/health",
+    endpoints: {
+      health: "GET /api/health",
+      products: "GET /api/products",
+      // ... add more if you want
+    }
+  });
+});
+
+// Or, if you want to serve a frontend (recommended for production):
+// app.use(express.static(path.join(__dirname, 'dist')));  // or 'build'
+// app.get('*', (req, res) => {
+//   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+// });
+
 // ==================== 404 & Error Handling ====================
 app.use((req, res) => {
   res.status(404).json({
