@@ -8,36 +8,6 @@ dotenv.config();
 
 const app = express();
 
-//=======================CORS Configuration========================
-const cors = require('cors');
-
-const allowedOrigins = [
-  'http://localhost:3000',                    // Local development
-  'https://aaoms.onrender.com',               // Backend itself (if needed)
-  'https://your-frontend-service.onrender.com' // ← CHANGE THIS to your actual frontend URL
-];
-
-// If you want to allow all subdomains of onrender.com (easier during testing)
-const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, Postman)
-    if (!origin) return callback(null, true);
-    
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,           // Important for cookies, auth headers
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
-};
-
-app.use(cors(corsOptions));
-
-//===================================================================================
-
 
 // ==================== Environment Variable Validation ====================
 const requiredEnvVars = ['JWT_SECRET'];
@@ -195,22 +165,39 @@ const connectDatabase = async () => {
 };
 
 // ==================== Middleware ====================
-// Compression (gzip) — dramatically reduces JSON, HTML, text response sizes (often 60-80% smaller)
+
+// Compression
 app.use(compression({
   level: 6,
-  threshold: 1024, // only compress responses >1KB
+  threshold: 1024,
   filter: (req, res) => {
     if (req.headers['x-no-compression']) return false;
     return compression.filter(req, res);
   }
 }));
 
+// CORS - Fixed & Flexible
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  origin: function (origin, callback) {
+    const allowed = [
+      'http://localhost:3000',
+      process.env.FRONTEND_URL,
+      'https://aaoms.onrender.com'
+    ].filter(Boolean);
+
+    if (!origin || allowed.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
+
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
