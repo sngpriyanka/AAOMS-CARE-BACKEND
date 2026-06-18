@@ -8,6 +8,23 @@ dotenv.config();
 
 const app = express();
 
+// Keep Render + Neon alive
+const keepAlive = async () => {
+  try {
+    await sql`SELECT 1`;        // Neon ping
+    console.log('✅ Keep-alive ping successful');
+  } catch (e) {
+    console.error('Keep-alive failed:', e.message);
+  }
+};
+
+// Ping every 4 minutes
+setInterval(keepAlive, 4 * 60 * 1000);
+
+// Also create a simple ping endpoint for Render/UptimeRobot
+app.get('/ping', (req, res) => {
+  res.status(200).send('OK');
+});
 
 // ==================== Environment Variable Validation ====================
 const requiredEnvVars = ['JWT_SECRET'];
@@ -219,7 +236,7 @@ app.use((req, res, next) => {
 app.get('/api/health', (req, res) => {
   res.json({ 
     success: true,
-    message: 'AAOMS Backend is Running!',
+    message: 'Bombay Trooper Backend is Running!',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
     database: dbConnected
@@ -295,27 +312,6 @@ app.use('/api/reviews', reviewsRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/contact', contactRoutes);
-
-// ==================== Root Route ====================
-app.get('/', (req, res) => {
-  res.json({
-    success: true,
-    message: "AAOMS Backend API is Running",
-    version: "1.0",
-    documentation: "/api/health",
-    endpoints: {
-      health: "GET /api/health",
-      products: "GET /api/products",
-      // ... add more if you want
-    }
-  });
-});
-
-// Or, if you want to serve a frontend (recommended for production):
-// app.use(express.static(path.join(__dirname, 'dist')));  // or 'build'
-// app.get('*', (req, res) => {
-//   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
-// });
 
 // ==================== 404 & Error Handling ====================
 app.use((req, res) => {

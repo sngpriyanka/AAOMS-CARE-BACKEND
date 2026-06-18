@@ -3,13 +3,22 @@ const Database = require('../models/DatabaseAdapter');
 
 let cachedTransporter = null;
 
+function getSmtpCredentials() {
+  return {
+    user: process.env.SMTP_USER || process.env.SMTP_MAIL || process.env.EMAIL_USER || '',
+    pass: process.env.SMTP_PASS || process.env.EMAIL_PASSWORD || '',
+    service: process.env.SMTP_SERVICE || process.env.EMAIL_SERVICE || 'gmail',
+  };
+}
+
 function getTransporter() {
   if (cachedTransporter) return cachedTransporter;
 
   const hasHost = !!process.env.SMTP_HOST;
-  const hasServiceOrMail = !!(process.env.SMTP_SERVICE || process.env.SMTP_MAIL);
+  const { user, pass, service } = getSmtpCredentials();
+  const hasServiceOrMail = !!(service || user);
 
-  if (!hasHost && !hasServiceOrMail) {
+  if (!hasHost && (!hasServiceOrMail || !user || !pass)) {
     return null;
   }
 
@@ -19,18 +28,12 @@ function getTransporter() {
         host: process.env.SMTP_HOST,
         port: parseInt(process.env.SMTP_PORT || '587', 10),
         secure: process.env.SMTP_SECURE === 'true',
-        auth: {
-          user: process.env.SMTP_USER || process.env.SMTP_MAIL,
-          pass: process.env.SMTP_PASS
-        }
+        auth: { user, pass }
       });
     } else {
       cachedTransporter = nodemailer.createTransport({
-        service: process.env.SMTP_SERVICE || 'gmail',
-        auth: {
-          user: process.env.SMTP_MAIL,
-          pass: process.env.SMTP_PASS
-        }
+        service,
+        auth: { user, pass }
       });
     }
     return cachedTransporter;
@@ -40,7 +43,22 @@ function getTransporter() {
   }
 }
 
-async function sendEmail({ to, subject, html, text }) {
+function getDefaultFromAddress() {
+  const { user } = getSmtpCredentials();
+  return process.env.EMAIL_FROM
+    || process.env.SUPPORT_EMAIL
+    || (user ? `"AAOMS Support" <${user}>` : '"AAOMS Support" <orders@aaoms.com>');
+}
+
+function getDefaultReplyToAddress() {
+  return process.env.SUPPORT_EMAIL
+    || process.env.SMTP_MAIL
+    || process.env.SMTP_USER
+    || process.env.EMAIL_USER
+    || null;
+}
+
+async function sendEmail({ to, subject, html, text, replyTo }) {
   const transporter = getTransporter();
   if (!transporter || !to) {
     if (process.env.NODE_ENV !== 'test') {
@@ -49,16 +67,22 @@ async function sendEmail({ to, subject, html, text }) {
     return { skipped: true };
   }
 
-  const from = process.env.EMAIL_FROM || `"AAOMS" <${process.env.SMTP_MAIL || process.env.SMTP_USER || 'orders@aaoms.com'}>`;
+  const from = getDefaultFromAddress();
+  const resolvedReplyTo = replyTo || getDefaultReplyToAddress();
 
   try {
-    const info = await transporter.sendMail({
+    const mailOptions = {
       from,
       to: String(to).trim(),
       subject: String(subject || 'AAOMS Update'),
       text: text || '',
       html: html || ''
-    });
+    };
+    if (resolvedReplyTo) {
+      mailOptions.replyTo = resolvedReplyTo;
+    }
+
+    const info = await transporter.sendMail(mailOptions);
     console.log(`[EmailService] ✓ Sent "${subject}" to ${to} (id: ${info.messageId || 'n/a'})`);
     return { success: true, messageId: info.messageId };
   } catch (err) {

@@ -582,7 +582,7 @@ exports.downloadInvoice = async (req, res) => {
 
     // Footer note
     doc.fontSize(9).text('Thank you for shopping with AAOMS!', { align: 'center' });
-    doc.text('For questions, contact support@aaoms.com or visit /contact', { align: 'center' });
+    doc.text('For questions, contact aaoms.official@gmail.com or visit /contact', { align: 'center' });
 
     // Finalize PDF
     doc.end();

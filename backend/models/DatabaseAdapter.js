@@ -389,6 +389,8 @@ class PostgresDatabase {
     aliasAndStrip('google_auth', 'googleAuth');
     aliasAndStrip('sub_description', 'subDescription');
     aliasAndStrip('product_information', 'productInformation');
+    aliasAndStrip('replied_at', 'repliedAt');
+    aliasAndStrip('reset_token', 'resetToken');
 
     // Coerce Postgres NUMERIC/DECIMAL (returned as strings) and other numeric fields to JS Number.
     // This prevents "X.toFixed is not a function" and similar when data comes from Postgres.
@@ -488,6 +490,8 @@ class PostgresDatabase {
       if (key === 'googleAuth') col = 'google_auth';
       if (key === 'subDescription') col = 'sub_description';
       if (key === 'productInformation') col = 'product_information';
+      if (key === 'repliedAt') col = 'replied_at';
+      if (key === 'resetToken') col = 'reset_token';
 
       // Skip internal _id if we have id
       if (col === '_id' && payload.id) continue;
@@ -611,6 +615,8 @@ class PostgresDatabase {
       if (key === 'googleAuth') col = 'google_auth';
       if (key === 'subDescription') col = 'sub_description';
       if (key === 'productInformation') col = 'product_information';
+      if (key === 'repliedAt') col = 'replied_at';
+      if (key === 'resetToken') col = 'reset_token';
 
       if (col === '_id' || col === 'id' || col === 'user_id') continue; // never update PK or owner
 

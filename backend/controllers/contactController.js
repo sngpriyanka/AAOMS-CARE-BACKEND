@@ -42,6 +42,9 @@ exports.submitContactMessage = async (req, res) => {
     };
 
     const saved = await Database.create(COLLECTION, contactData);
+    if (!saved || !saved.id) {
+      throw new Error('Failed to persist contact message');
+    }
 
     // Notify all admins (system notification)
     notify({
@@ -159,7 +162,14 @@ exports.replyToMessage = async (req, res) => {
       updatedAt: now
     });
 
-    // Send email to the customer (best effort)
+    if (!updated) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to save reply. Please try again.'
+      });
+    }
+
+    // Send email to the customer
     const customerEmail = msg.email;
     const customerName = msg.name || 'Customer';
     const originalSubject = msg.subject || 'Your inquiry';
@@ -235,17 +245,37 @@ If you need more help, reply to this email or visit ${frontendUrl}/contact
 Best regards,
 AAOMS Support Team`;
 
-    // Fire and forget email (log result)
-    sendEmail({ to: customerEmail, subject: emailSubject, html, text })
-      .then(r => {
-        if (r && r.skipped) console.log('[ContactReply] Email skipped (no SMTP configured)');
-      })
-      .catch(e => console.warn('[ContactReply] Email send failed:', e.message));
+    const emailResult = await sendEmail({
+      to: customerEmail,
+      subject: emailSubject,
+      html,
+      text
+    });
+
+    if (emailResult.skipped) {
+      return res.status(503).json({
+        success: false,
+        message: 'Reply saved, but email was not sent because SMTP is not configured. Set SMTP_MAIL and SMTP_PASS (or EMAIL_USER and EMAIL_PASSWORD) in backend/.env.',
+        data: updated,
+        emailSent: false
+      });
+    }
+
+    if (!emailResult.success) {
+      return res.status(502).json({
+        success: false,
+        message: `Reply saved, but the email failed to send: ${emailResult.error || 'Unknown SMTP error'}`,
+        data: updated,
+        emailSent: false
+      });
+    }
 
     res.json({
       success: true,
       message: 'Reply sent successfully to customer email',
-      data: updated
+      data: updated,
+      emailSent: true,
+      messageId: emailResult.messageId || null
     });
   } catch (error) {
     console.error('Reply error:', error);

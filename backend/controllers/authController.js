@@ -8,12 +8,55 @@ const { sendSms } = require('../utils/sparrowSms');
 const { sendSignupOtpEmail } = require('../utils/emailService');
 
 const USERS_COLLECTION = 'users';
+const ADMINS_COLLECTION = 'admins';
 
 function getLoginTokenExpiry(rememberMe) {
   if (rememberMe) {
     return process.env.JWT_REMEMBER_EXPIRES_IN || process.env.JWT_EXPIRES_IN || '7d';
   }
   return process.env.JWT_SESSION_EXPIRES_IN || '1d';
+}
+
+function isBcryptHash(value) {
+  return typeof value === 'string' && /^\$2[aby]\$\d{2}\$/.test(value);
+}
+
+async function comparePassword(plain, hash) {
+  if (!plain || !isBcryptHash(hash)) return false;
+  try {
+    return await bcrypt.compare(plain, hash);
+  } catch {
+    return false;
+  }
+}
+
+async function findAccountByEmail(email) {
+  const normalizedEmail = String(email || '').toLowerCase().trim();
+  const user = await Database.findBy(USERS_COLLECTION, 'email', normalizedEmail);
+  if (user) {
+    return { account: user, collection: USERS_COLLECTION };
+  }
+
+  const admin = await Database.findBy(ADMINS_COLLECTION, 'email', normalizedEmail);
+  if (admin) {
+    return { account: admin, collection: ADMINS_COLLECTION };
+  }
+
+  return { account: null, collection: null };
+}
+
+async function findAccountById(userId) {
+  const user = await Database.read(USERS_COLLECTION, userId);
+  if (user) {
+    return { account: user, collection: USERS_COLLECTION };
+  }
+
+  const admin = await Database.read(ADMINS_COLLECTION, userId);
+  if (admin) {
+    return { account: admin, collection: ADMINS_COLLECTION };
+  }
+
+  return { account: null, collection: null };
 }
 
 // ==================== SIGNUP ====================
@@ -132,32 +175,40 @@ exports.forgotPassword = async (req, res) => {
     }
 
     const normalizedEmail = email.toLowerCase();
+    const { account: user, collection: targetCollection } = await findAccountByEmail(normalizedEmail);
 
-    // Check user exists
-    let user = await Database.findBy(USERS_COLLECTION, 'email', normalizedEmail);
-    if (!user) {
-      user = await Database.findBy('admins', 'email', normalizedEmail);
-    }
-
-    if (!user) {
+    if (!user || !targetCollection) {
       return res.status(404).json({
         success: false,
         message: 'Email not registered'
       });
     }
 
+    const targetId = user.id || user._id;
+    if (!targetId) {
+      return res.status(500).json({
+        success: false,
+        message: 'Unable to process password reset for this account.'
+      });
+    }
+
     // Generate Reset Token (valid for 1 hour)
     const resetToken = jwt.sign(
-      { id: user.id || user._id },
+      { id: targetId, collection: targetCollection },
       process.env.JWT_SECRET,
       { expiresIn: '1h' }
     );
 
-    // Save token to user / admin (via adapter so it works for all DB types)
-    const targetCollection = (user.role === 'admin' || user.role === 'super_admin' || !user.id) ? 'admins' : USERS_COLLECTION;
-    const targetId = user.id || user._id;
-    if (targetId) {
-      await Database.update(targetCollection, targetId, { resetToken });
+    const tokenSaved = await Database.update(targetCollection, targetId, {
+      resetToken,
+      updatedAt: new Date().toISOString()
+    });
+
+    if (!tokenSaved) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to prepare password reset. Please try again.'
+      });
     }
 
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
@@ -260,9 +311,9 @@ exports.login = async (req, res) => {
     const tokenExpiry = getLoginTokenExpiry(!!rememberMe);
 
     // === Check Admin Collection (via unified adapter - works for JSON, Mongo, Postgres) ===
-    let admin = await Database.findBy('admins', 'email', normalizedEmail);
+    let admin = await Database.findBy(ADMINS_COLLECTION, 'email', normalizedEmail);
     if (admin) {
-      const passwordMatch = await bcrypt.compare(password, admin.password);
+      const passwordMatch = await comparePassword(password, admin.password);
       if (!passwordMatch) {
         return res.status(401).json({ success: false, message: 'Invalid email or password' });
       }
@@ -308,7 +359,7 @@ exports.login = async (req, res) => {
       return res.status(401).json({ success: false, message: 'Invalid email or password' });
     }
 
-    const passwordMatch = await bcrypt.compare(password, user.password);
+    const passwordMatch = await comparePassword(password, user.password);
     if (!passwordMatch) {
       return res.status(401).json({ success: false, message: 'Invalid email or password' });
     }
@@ -369,58 +420,55 @@ exports.resetPassword = async (req, res) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const userId = decoded.id;
-
-    //console.log(`🔍 Reset attempt for user ID: ${userId}`);
+    const hintedCollection = decoded.collection;
 
     const hashedPassword = await bcrypt.hash(newPassword, 12);
 
-    let updated = false;
+    let targetCollection = hintedCollection;
+    let account = null;
 
-    // Method 1: Direct findBy
-    let user = await Database.findBy(USERS_COLLECTION, 'id', userId);
-    if (user) {
-      await Database.update(USERS_COLLECTION, userId, { 
-        password: hashedPassword,
-        resetToken: null 
-      });
-      updated = true;
-      console.log('✅ User found and updated (Method 1)');
+    if (targetCollection) {
+      account = await Database.read(targetCollection, userId);
     }
 
-    // Method 2: readAll fallback (async)
-    if (!updated) {
-      const allUsers = await Database.readAll(USERS_COLLECTION);
-      user = allUsers.find(u => u && u.id === userId);
-      if (user) {
-        await Database.update(USERS_COLLECTION, userId, { 
-          password: hashedPassword,
-          resetToken: null 
-        });
-        updated = true;
-        console.log('✅ User found and updated (Method 2)');
-      }
+    if (!account) {
+      const located = await findAccountById(userId);
+      account = located.account;
+      targetCollection = located.collection;
     }
 
-    // Method 3: Admin Collection (via adapter)
-    if (!updated) {
-      const admin = await Database.findBy('admins', 'id', userId) || await Database.read('admins', userId);
-      if (admin) {
-        await Database.update('admins', userId, { password: hashedPassword, resetToken: null });
-        updated = true;
-        console.log('✅ Admin password updated');
-      }
-    }
-
-    if (updated) {
-      return res.json({
-        success: true,
-        message: 'Password reset successful. You can now login.'
+    if (!account || !targetCollection) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found or reset link has expired. Please request a new one.'
       });
     }
 
-    return res.status(404).json({
-      success: false,
-      message: 'User not found or reset link has expired. Please request a new one.'
+    const updated = await Database.update(targetCollection, userId, {
+      password: hashedPassword,
+      resetToken: null,
+      updatedAt: new Date().toISOString()
+    });
+
+    if (!updated || !updated.password) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to save the new password. Please try again.'
+      });
+    }
+
+    const passwordSavedCorrectly = await comparePassword(newPassword, updated.password);
+    if (!passwordSavedCorrectly) {
+      console.error(`[ResetPassword] Password verification failed after update for user ${userId}`);
+      return res.status(500).json({
+        success: false,
+        message: 'Password was not saved correctly. Please request a new reset link and try again.'
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: 'Password reset successful. You can now login.'
     });
 
   } catch (error) {
