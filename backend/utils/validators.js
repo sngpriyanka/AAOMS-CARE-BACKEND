@@ -27,7 +27,8 @@ const validateProductData = (product) => {
     return { valid: false, message: 'Price must be greater than 0' };
   }
   
-  if (!product.category) {
+  const category = typeof product.category === 'string' ? product.category.trim() : '';
+  if (!category) {
     return { valid: false, message: 'Category is required' };
   }
   

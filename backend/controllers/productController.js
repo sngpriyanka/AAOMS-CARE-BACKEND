@@ -21,7 +21,7 @@ const normalizeProductPayload = (body) => {
     description,
     subDescription: body.subDescription || '',
     productInformation: body.productInformation || '',
-    category: body.category,
+    category: typeof body.category === 'string' ? body.category.trim() : '',
     image,
     images: Array.isArray(body.images) && body.images.length ? body.images : (image ? [image] : []),
     sizes: Array.isArray(body.sizes) ? body.sizes : String(body.sizes || '').split(',').map(s => s.trim()).filter(Boolean),
@@ -34,47 +34,72 @@ const normalizeProductPayload = (body) => {
   };
 };
 
+const CATEGORY_ALIASES = {
+  't-shirts': ['t-shirts', 'tshirts'],
+  tshirts: ['t-shirts', 'tshirts'],
+  scrubs: ['scrub', 'scrubs'],
+  scrub: ['scrub', 'scrubs'],
+};
+
+const filterProductsInMemory = (products, { category, minPrice, maxPrice, search }) => {
+  let next = products.filter(p => p.isActive !== false);
+
+  if (category) {
+    const allowed = CATEGORY_ALIASES[category] || [category];
+    next = next.filter(p => allowed.includes(p.category));
+  }
+
+  if (minPrice || maxPrice) {
+    next = next.filter(p => {
+      const price = parseFloat(p.price);
+      if (minPrice && price < parseFloat(minPrice)) return false;
+      if (maxPrice && price > parseFloat(maxPrice)) return false;
+      return true;
+    });
+  }
+
+  if (search) {
+    const searchLower = search.toLowerCase();
+    next = next.filter(p =>
+      p.name.toLowerCase().includes(searchLower) ||
+      (p.description && p.description.tagline && p.description.tagline.toLowerCase().includes(searchLower))
+    );
+  }
+
+  return next;
+};
+
 exports.getAllProducts = async (req, res) => {
   try {
     const { category, minPrice, maxPrice, search, page = 1, limit = 10 } = req.query;
-    
-    let products = await Database.readAll(PRODUCTS_COLLECTION);
-    products = products.filter(p => p.isActive !== false);
+    const pageNum = Math.max(parseInt(page, 10) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);
 
-    // Filter by category (with alias support for t-shirts/tshirts, scrub/scrubs etc.)
-    if (category) {
-      const categoryAliases = {
-        't-shirts': ['t-shirts', 'tshirts'],
-        tshirts: ['t-shirts', 'tshirts'],
-        scrubs: ['scrub', 'scrubs'],
-        scrub: ['scrub', 'scrubs'],
-      };
-      const allowed = categoryAliases[category] || [category];
-      products = products.filter(p => allowed.includes(p.category));
-    }
+    const pgResult = await Database.readProductsFiltered({
+      categories: category ? (CATEGORY_ALIASES[category] || [category]) : undefined,
+      minPrice,
+      maxPrice,
+      search,
+      page: pageNum,
+      limit: limitNum,
+    });
 
-    // Filter by price range
-    if (minPrice || maxPrice) {
-      products = products.filter(p => {
-        const price = parseFloat(p.price);
-        if (minPrice && price < parseFloat(minPrice)) return false;
-        if (maxPrice && price > parseFloat(maxPrice)) return false;
-        return true;
+    if (pgResult) {
+      return res.json({
+        success: true,
+        data: pgResult.items,
+        pagination: {
+          total: pgResult.total,
+          page: pgResult.page,
+          limit: pgResult.limit,
+          pages: Math.ceil(pgResult.total / pgResult.limit) || 1,
+        },
       });
     }
 
-    // Search by name or description
-    if (search) {
-      const searchLower = search.toLowerCase();
-      products = products.filter(p => 
-        p.name.toLowerCase().includes(searchLower) ||
-        (p.description && p.description.tagline && p.description.tagline.toLowerCase().includes(searchLower))
-      );
-    }
+    let products = await Database.readAll(PRODUCTS_COLLECTION);
+    products = filterProductsInMemory(products, { category, minPrice, maxPrice, search });
 
-    // Pagination
-    const pageNum = parseInt(page);
-    const limitNum = Math.min(parseInt(limit), 100);
     const skip = (pageNum - 1) * limitNum;
     const paginatedProducts = products.slice(skip, skip + limitNum);
 

@@ -47,6 +47,13 @@ router.post('/product-video', protect, adminOnly, upload.single('file'), uploadC
 router.post('/banner', protect, adminOnly, upload.single('file'), uploadController.uploadBanner);
 
 /**
+ * POST /api/upload/banners
+ * Upload multiple banner images
+ * Middleware: Authentication + Admin only, multiple files upload
+ */
+router.post('/banners', protect, adminOnly, upload.array('files', 10), uploadController.uploadBanners);
+
+/**
  * POST /api/upload/profile-picture
  * Upload user profile picture
  * Middleware: Authenticated user, single file upload

@@ -233,6 +233,43 @@ const uploadBanner = async (req, res) => {
   }
 };
 
+// ==================== UPLOAD MULTIPLE BANNER IMAGES ====================
+/**
+ * Upload multiple banner images
+ * POST /api/upload/banners
+ * Requires: files in request (multiple)
+ */
+const uploadBanners = async (req, res) => {
+  try {
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No files provided'
+      });
+    }
+
+    const results = await uploadMultipleToCloudinary(req.files, 'aaxoms/banners');
+
+    res.json({
+      success: true,
+      message: 'Banner images uploaded successfully',
+      data: results.map(result => ({
+        url: result.secure_url,
+        publicId: result.public_id,
+        size: result.bytes,
+        format: result.format
+      }))
+    });
+  } catch (error) {
+    console.error('Error uploading banner images:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error uploading banner images',
+      error: error.message
+    });
+  }
+};
+
 // ==================== UPLOAD GENERIC FILE ====================
 /**
  * Upload any image or video (generic endpoint)
@@ -320,6 +357,7 @@ module.exports = {
   uploadProfilePicture,
   uploadProductVideo,
   uploadBanner,
+  uploadBanners,
   uploadFile,
   deleteFile
 };

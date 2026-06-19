@@ -6,13 +6,17 @@ const compression = require('compression');
 
 dotenv.config();
 
+let pgPool = null;
+
 const app = express();
 
 // Keep Render + Neon alive
 const keepAlive = async () => {
   try {
-    await sql`SELECT 1`;        // Neon ping
-    console.log('✅ Keep-alive ping successful');
+    if (pgPool) {
+      await pgPool.query('SELECT 1');
+      console.log('✅ Keep-alive ping successful');
+    }
   } catch (e) {
     console.error('Keep-alive failed:', e.message);
   }
@@ -65,7 +69,7 @@ const connectDatabase = async () => {
   if (dbType === 'postgres' || dbType === 'postgresql' || dbType === 'neon' || dbType === 'pg') {
     try {
       const { connectPostgres } = require('./models/postgres');
-      const pool = await connectPostgres();
+      pgPool = await connectPostgres();
 
       if (pool) {
         dbConnected = 'postgres';

@@ -516,6 +516,10 @@ const bannerSchema = new mongoose.Schema({
     required: true,
   },
   publicId: String,
+  images: {
+    type: [String],
+    default: [],
+  },
   pages: {
     type: [String],
     default: ['home'],

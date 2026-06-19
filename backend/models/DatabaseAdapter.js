@@ -554,11 +554,73 @@ class PostgresDatabase {
 
     const table = this.getTableName(collection);
     try {
-      const { rows } = await pool.query(`SELECT * FROM ${table} ORDER BY created_at DESC NULLS LAST, created_at DESC`);
+      const { rows } = await pool.query(`SELECT * FROM ${table} ORDER BY created_at DESC NULLS LAST`);
       return this._normalizeMany(rows);
     } catch (error) {
       console.error(`Postgres readAll error [${collection}]:`, error.message);
       return [];
+    }
+  }
+
+  static async readProductsFiltered(options = {}) {
+    const pool = getPgPool();
+    if (!pool) return null;
+
+    const conditions = ['(is_active IS NULL OR is_active = true)'];
+    const values = [];
+    let idx = 1;
+
+    if (Array.isArray(options.categories) && options.categories.length) {
+      conditions.push(`category = ANY($${idx++})`);
+      values.push(options.categories);
+    }
+
+    if (options.search) {
+      const term = `%${String(options.search).toLowerCase()}%`;
+      conditions.push(`(
+        LOWER(name) LIKE $${idx}
+        OR LOWER(COALESCE(description::text, '')) LIKE $${idx}
+      )`);
+      values.push(term);
+      idx += 1;
+    }
+
+    if (options.minPrice != null && options.minPrice !== '') {
+      conditions.push(`price >= $${idx++}`);
+      values.push(Number(options.minPrice));
+    }
+
+    if (options.maxPrice != null && options.maxPrice !== '') {
+      conditions.push(`price <= $${idx++}`);
+      values.push(Number(options.maxPrice));
+    }
+
+    const where = `WHERE ${conditions.join(' AND ')}`;
+    const limit = Math.min(Math.max(parseInt(options.limit, 10) || 10, 1), 100);
+    const page = Math.max(parseInt(options.page, 10) || 1, 1);
+    const offset = (page - 1) * limit;
+
+    try {
+      const countResult = await pool.query(
+        `SELECT COUNT(*)::int AS total FROM products ${where}`,
+        values
+      );
+      const total = countResult.rows[0]?.total || 0;
+
+      const dataResult = await pool.query(
+        `SELECT * FROM products ${where} ORDER BY created_at DESC NULLS LAST LIMIT $${idx++} OFFSET $${idx++}`,
+        [...values, limit, offset]
+      );
+
+      return {
+        items: this._normalizeMany(dataResult.rows),
+        total,
+        page,
+        limit,
+      };
+    } catch (error) {
+      console.error('Postgres readProductsFiltered error:', error.message);
+      return null;
     }
   }
 
@@ -775,6 +837,13 @@ class Database {
       return this.mongoDB.readAll(collection);
     }
     return this.jsonDB.readAll(collection);
+  }
+
+  static readProductsFiltered(options) {
+    if (this._isPostgres()) {
+      return this.postgresDB.readProductsFiltered(options);
+    }
+    return null;
   }
 
   // Update

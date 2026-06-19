@@ -13,6 +13,7 @@ const ensureBannerSchema = async () => {
     await pool.query(`ALTER TABLE banners ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;`);
     await pool.query(`ALTER TABLE banners ADD COLUMN IF NOT EXISTS pages JSONB DEFAULT '["home"]';`);
     await pool.query(`ALTER TABLE banners ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();`);
+    await pool.query(`ALTER TABLE banners ADD COLUMN IF NOT EXISTS images JSONB DEFAULT '[]';`);
   } catch (e) {
     // Non-fatal – table may not exist yet or using JSON DB
     if (!/relation "banners" does not exist/i.test(e.message || '')) {
@@ -22,6 +23,19 @@ const ensureBannerSchema = async () => {
 };
 
 const COLLECTION = 'banners';
+
+const normalizeBannerImages = (body = {}) => {
+  let images = [];
+  if (Array.isArray(body.images) && body.images.length) {
+    images = body.images
+      .map((img) => (typeof img === 'string' ? img : img?.url))
+      .filter(Boolean);
+  } else if (body.url) {
+    images = [body.url];
+  }
+  const url = images[0] || body.url || '';
+  return { images, url };
+};
 
 exports.getBanners = async (req, res) => {
   try {
@@ -53,9 +67,10 @@ exports.createBanner = async (req, res) => {
   try {
     await ensureBannerSchema(); // make sure columns exist even without full server restart
 
-    const { name, url, publicId, pages: rawPages, link, title, subtitle } = req.body;
+    const { name, publicId, pages: rawPages, link, title, subtitle } = req.body;
+    const { images, url } = normalizeBannerImages(req.body);
     if (!name || !url) {
-      return res.status(400).json({ success: false, message: 'Banner name and image URL are required' });
+      return res.status(400).json({ success: false, message: 'Banner name and at least one image are required' });
     }
 
     // Robustly coerce pages into a proper array (handles cases where it arrives as JSON string, object, etc.)
@@ -83,6 +98,7 @@ exports.createBanner = async (req, res) => {
       _id: id,
       name,
       url,
+      images,
       publicId: publicId || '',
       pages,
       link: link || '/collection',
@@ -104,6 +120,9 @@ exports.updateBanner = async (req, res) => {
     await ensureBannerSchema();
 
     const body = { ...req.body };
+    const { images, url } = normalizeBannerImages(body);
+    body.images = images;
+    body.url = url;
 
     // Same robust pages coercion as create (in case form sent stringified or object pages)
     if (body.pages !== undefined) {

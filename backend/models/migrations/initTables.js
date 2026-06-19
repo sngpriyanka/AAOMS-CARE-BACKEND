@@ -268,6 +268,7 @@ const initializeTables = async (client) => {
         name TEXT NOT NULL,
         url TEXT NOT NULL,
         public_id TEXT,
+        images JSONB DEFAULT '[]',
         pages JSONB DEFAULT '["home"]',
         link TEXT DEFAULT '/collection',
         title TEXT,
