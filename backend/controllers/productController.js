@@ -1,6 +1,7 @@
 
 const Database = require('../models/DatabaseAdapter');
 const { validateProductData } = require('../utils/validators');
+const { cascadeProductDeletion } = require('../utils/productCascade');
 const { v4: uuidv4 } = require('uuid');
 const PRODUCTS_COLLECTION = 'products';
 
@@ -279,13 +280,28 @@ exports.deleteProduct = async (req, res) => {
     }
 
     const { id } = req.params;
+    const product = await Database.read(PRODUCTS_COLLECTION, id);
+
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
+      });
+    }
+
+    const cascade = await cascadeProductDeletion(product);
     await Database.delete(PRODUCTS_COLLECTION, id);
 
     res.json({
       success: true,
-      message: 'Product deleted successfully'
+      message: 'Product deleted and removed from all related records',
+      data: {
+        id,
+        cascade,
+      },
     });
   } catch (error) {
+    console.error('deleteProduct error:', error);
     res.status(500).json({
       success: false,
       message: 'Error deleting product',

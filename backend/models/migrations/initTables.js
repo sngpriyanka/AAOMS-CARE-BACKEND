@@ -286,6 +286,28 @@ const initializeTables = async (client) => {
     `);
 
     await client.query(`
+      CREATE TABLE IF NOT EXISTS testimonials (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        title TEXT NOT NULL,
+        rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+        text TEXT NOT NULL,
+        image TEXT,
+        public_id TEXT,
+        product_id TEXT,
+        sort_order INTEGER DEFAULT 0,
+        is_active BOOLEAN DEFAULT true,
+        created_by TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    await client.query(`
+      ALTER TABLE testimonials ADD COLUMN IF NOT EXISTS created_by TEXT;
+    `);
+
+    await client.query(`
       CREATE TABLE IF NOT EXISTS reviews (
         id TEXT PRIMARY KEY,
         product_id TEXT NOT NULL,
@@ -417,14 +439,52 @@ const ensureContactMessagesTable = async (client) => {
   await client.query(`ALTER TABLE contact_messages ADD COLUMN IF NOT EXISTS replied_at TIMESTAMPTZ;`).catch(() => {});
 };
 
+/** Idempotent patch for testimonials — safe to run on every server start. */
+const ensureTestimonialsTable = async (client) => {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS testimonials (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      title TEXT NOT NULL,
+      rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+      text TEXT NOT NULL,
+      image TEXT,
+      public_id TEXT,
+      product_id TEXT,
+      sort_order INTEGER DEFAULT 0,
+      is_active BOOLEAN DEFAULT true,
+      created_by TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+  await client.query(`ALTER TABLE testimonials ADD COLUMN IF NOT EXISTS created_by TEXT;`).catch(() => {});
+  await client.query(`ALTER TABLE testimonials ADD COLUMN IF NOT EXISTS public_id TEXT;`).catch(() => {});
+  await client.query(`ALTER TABLE testimonials ADD COLUMN IF NOT EXISTS product_id TEXT;`).catch(() => {});
+  await client.query(`ALTER TABLE testimonials ADD COLUMN IF NOT EXISTS sort_order INTEGER DEFAULT 0;`).catch(() => {});
+  await client.query(`ALTER TABLE testimonials ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;`).catch(() => {});
+  await client.query(`ALTER TABLE testimonials ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();`).catch(() => {});
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_testimonials_sort_order ON testimonials(sort_order);`).catch(() => {});
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_testimonials_is_active ON testimonials(is_active);`).catch(() => {});
+
+  // Remove legacy demo seed rows — only admin-submitted testimonials should exist
+  const demoIds = ['t1-dila-yadav', 't2-sushan-shakya', 't3-sweta-singh', 't4-dr-prashant'];
+  await client.query(
+    `DELETE FROM testimonials WHERE id = ANY($1::text[])`,
+    [demoIds]
+  ).catch(() => {});
+};
+
 const ensureSchemaPatches = async (client) => {
   await ensureAuthSchemaPatches(client);
   await ensureContactMessagesTable(client);
+  await ensureTestimonialsTable(client);
 };
 
 module.exports = {
   initializeTables,
   ensureAuthSchemaPatches,
   ensureContactMessagesTable,
+  ensureTestimonialsTable,
   ensureSchemaPatches
 };

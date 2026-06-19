@@ -270,6 +270,48 @@ const uploadBanners = async (req, res) => {
   }
 };
 
+// ==================== UPLOAD TESTIMONIAL IMAGE ====================
+/**
+ * Upload testimonial image
+ * POST /api/upload/testimonial
+ * Requires: file in request
+ */
+const uploadTestimonialImage = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'No file provided'
+      });
+    }
+
+    const result = await uploadToCloudinary(
+      req.file.buffer,
+      `testimonial-${Date.now()}`,
+      'aaxoms/testimonials',
+      'image'
+    );
+
+    res.json({
+      success: true,
+      message: 'Testimonial image uploaded successfully',
+      data: {
+        url: result.secure_url,
+        publicId: result.public_id,
+        fileName: req.file.originalname,
+        size: result.bytes
+      }
+    });
+  } catch (error) {
+    console.error('Error uploading testimonial image:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error uploading testimonial image',
+      error: error.message
+    });
+  }
+};
+
 // ==================== UPLOAD GENERIC FILE ====================
 /**
  * Upload any image or video (generic endpoint)
@@ -358,6 +400,7 @@ module.exports = {
   uploadProductVideo,
   uploadBanner,
   uploadBanners,
+  uploadTestimonialImage,
   uploadFile,
   deleteFile
 };

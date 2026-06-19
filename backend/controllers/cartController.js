@@ -1,5 +1,6 @@
 const Database = require('../models/DatabaseAdapter');
 const { validateCartItem } = require('../utils/validators');
+const { sanitizeLineItems } = require('../utils/productCascade');
 
 const CARTS_COLLECTION = 'carts';
 const USERS_COLLECTION = 'users';
@@ -26,6 +27,20 @@ exports.getCart = async (req, res) => {
     // Ensure items is always an array (defensive for different DB backends)
     if (!Array.isArray(cart.items)) cart.items = [];
 
+    const { items: sanitizedItems, removed } = await sanitizeLineItems(cart.items);
+    if (removed > 0) {
+      cart.items = sanitizedItems;
+      cart.total = sanitizedItems.reduce(
+        (sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 1),
+        0
+      );
+      await Database.update(CARTS_COLLECTION, cart.id || cart._id, {
+        items: cart.items,
+        total: cart.total,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+
     res.json({
       success: true,
       data: cart
@@ -50,6 +65,14 @@ exports.addToCart = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: validation.message
+      });
+    }
+
+    const product = await Database.read('products', productId);
+    if (!product || product.isActive === false) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found or no longer available',
       });
     }
 

@@ -544,6 +544,58 @@ const bannerSchema = new mongoose.Schema({
   },
 });
 
+// ==================== TESTIMONIAL SCHEMA ====================
+const testimonialSchema = new mongoose.Schema({
+  _id: {
+    type: String,
+    required: true,
+  },
+  name: {
+    type: String,
+    required: true,
+  },
+  title: {
+    type: String,
+    required: true,
+  },
+  rating: {
+    type: Number,
+    required: true,
+    min: 1,
+    max: 5,
+  },
+  text: {
+    type: String,
+    required: true,
+  },
+  image: {
+    type: String,
+    default: '',
+  },
+  publicId: String,
+  productId: {
+    type: String,
+    default: '',
+  },
+  sortOrder: {
+    type: Number,
+    default: 0,
+  },
+  isActive: {
+    type: Boolean,
+    default: true,
+  },
+  createdBy: String,
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
+  updatedAt: {
+    type: Date,
+    default: Date.now,
+  },
+});
+
 // ==================== PENDING PAYMENT SCHEMA (for secure payment verification) ====================
 // This replaces the previous in-memory pendingPayments Map.
 // Records have short expiry and are deleted after successful verification or expiry.
@@ -712,6 +764,7 @@ const Wishlist = mongoose.model('Wishlist', wishlistSchema);
 const Payment = mongoose.model('Payment', paymentSchema);
 const InstagramFeed = mongoose.model('InstagramFeed', instagramFeedSchema);
 const Banner = mongoose.model('Banner', bannerSchema);
+const Testimonial = mongoose.model('Testimonial', testimonialSchema);
 const PendingPayment = mongoose.model('PendingPayment', pendingPaymentSchema);
 const Review = mongoose.model('Review', reviewSchema);
 const Notification = mongoose.model('Notification', notificationSchema);
@@ -751,5 +804,5 @@ const Subscriber = mongoose.model('Subscriber', subscriberSchema);
 
 module.exports = { 
   User, Admin, Product, Order, Cart, Address, Wishlist, Payment, 
-  InstagramFeed, Banner, PendingPayment, Review, Notification, Subscriber 
+  InstagramFeed, Banner, Testimonial, PendingPayment, Review, Notification, Subscriber 
 };

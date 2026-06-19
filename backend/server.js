@@ -203,6 +203,8 @@ app.use(cors({
       'http://localhost:3000',
       'https://aaoms-frontend.vercel.app',     // ← Your Vercel Frontend
       'https://aaoms.onrender.com',            // Backend itself (if needed)
+      'https://aaoms.online',
+    'https://www.aaoms.online',          
       process.env.FRONTEND_URL
     ].filter(Boolean);
 
@@ -225,6 +227,7 @@ app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 const publicCacheablePaths = [
   '/api/products',
   '/api/banners',
+  '/api/testimonials',
   '/api/instagram-feed',
   '/api/reviews',
   '/api/health',
@@ -301,6 +304,7 @@ const uploadRoutes = require('./routes/uploadRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const instagramFeedRoutes = require('./routes/instagramFeedRoutes');
 const bannerRoutes = require('./routes/bannerRoutes');
+const testimonialRoutes = require('./routes/testimonialRoutes');
 const reviewsRoutes = require('./routes/reviewsRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const subscriptionRoutes = require('./routes/subscriptionRoutes');
@@ -326,6 +330,7 @@ app.use('/api/upload', uploadRoutes);
 app.use('/api/payment', paymentRoutes);   // ← Important: payment routes mounted here
 app.use('/api/instagram-feed', instagramFeedRoutes);
 app.use('/api/banners', bannerRoutes);
+app.use('/api/testimonials', testimonialRoutes);
 app.use('/api/reviews', reviewsRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);

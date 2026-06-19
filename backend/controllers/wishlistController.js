@@ -1,4 +1,5 @@
 const Database = require('../models/DatabaseAdapter');
+const { sanitizeLineItems } = require('../utils/productCascade');
 
 const WISHLISTS_COLLECTION = 'wishlists';
 const { v4: uuidv4 } = require('uuid');
@@ -15,6 +16,17 @@ exports.getWishlist = async (req, res) => {
         _id: uuidv4(),
         userId,
         items: []
+      });
+    }
+
+    if (!Array.isArray(wishlist.items)) wishlist.items = [];
+
+    const { items: sanitizedItems, removed } = await sanitizeLineItems(wishlist.items);
+    if (removed > 0) {
+      wishlist.items = sanitizedItems;
+      await Database.update(WISHLISTS_COLLECTION, wishlist.id || wishlist._id, {
+        items: wishlist.items,
+        updatedAt: new Date().toISOString(),
       });
     }
 
@@ -43,6 +55,14 @@ exports.addToWishlist = async (req, res) => {
 
     if (!productId) {
       return res.status(400).json({ success: false, message: 'Product ID is required' });
+    }
+
+    const product = await Database.read('products', productId);
+    if (!product || product.isActive === false) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found or no longer available',
+      });
     }
 
     // Find or create wishlist
