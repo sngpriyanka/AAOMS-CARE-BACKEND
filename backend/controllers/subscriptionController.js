@@ -163,7 +163,15 @@ exports.sendNewsletter = async (req, res) => {
     }
 
     const from = process.env.EMAIL_FROM || `"AAOMS Club" <${process.env.SMTP_MAIL || process.env.SMTP_USER}>`;
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const frontendUrl = [
+            'http://localhost:3000',
+      'http://localhost:5000',
+      'http://localhost:5173',
+      'https://aaoms-frontend.vercel.app',     // ← Your Vercel Frontend
+      'https://aaoms.onrender.com',            // Backend itself (if needed)
+      'https://aaoms.online',
+    'https://www.aaoms.online',   
+    ];
 
     // Build unsubscribe link (simple tokenless: link that could be extended with /unsubscribe?email=)
     const batchId = uuidv4();
