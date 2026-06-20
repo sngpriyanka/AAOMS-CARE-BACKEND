@@ -236,11 +236,16 @@ const publicCacheablePaths = [
 
 app.use((req, res, next) => {
   if (req.method === 'GET' && publicCacheablePaths.some(p => req.path.startsWith(p))) {
-    // Public data: cache 60s in CDN/browser, allow stale for 5min while revalidate
-    res.set({
-      'Cache-Control': 'public, max-age=60, s-maxage=300, stale-while-revalidate=300',
-      'Vary': 'Accept-Encoding, Authorization' // vary because auth header may affect some but here mostly public
-    });
+    // Individual product lookups must not be cached — they must reflect deletes immediately
+    if (/^\/api\/products\/(id|slug|resolve)\//.test(req.path)) {
+      res.set('Cache-Control', 'private, no-store, max-age=0');
+    } else {
+      // Public data: cache 60s in CDN/browser, allow stale for 5min while revalidate
+      res.set({
+        'Cache-Control': 'public, max-age=60, s-maxage=300, stale-while-revalidate=300',
+        'Vary': 'Accept-Encoding, Authorization' // vary because auth header may affect some but here mostly public
+      });
+    }
   } else if (req.method === 'GET' && req.path.startsWith('/api/')) {
     // Other GET APIs (user-specific): short private cache or no-store for dynamic
     // For carts/orders/wishlist use no-store to avoid stale private data

@@ -8,15 +8,19 @@ const COLLECTION = 'reviews';
 exports.getProductReviews = async (req, res) => {
   try {
     const { productId } = req.params;
-    let reviews = await Database.readAll(COLLECTION);
-    
-    reviews = reviews.filter(r => 
-      r.productId === productId && 
-      (r.status === 'approved' || !r.status) // treat missing as approved for legacy
-    );
-    
+
+    const pgReviews = await Database.readReviewsByProductId(productId);
+    if (pgReviews) {
+      return res.json({
+        success: true,
+        data: pgReviews,
+      });
+    }
+
+    let reviews = await Database.filterBy(COLLECTION, 'productId', productId);
+    reviews = reviews.filter(r => r.status === 'approved' || !r.status);
     reviews.sort((a, b) => new Date(b.createdAt || b.date || 0) - new Date(a.createdAt || a.date || 0));
-    
+
     res.json({
       success: true,
       data: reviews

@@ -1,0 +1,38 @@
+---
+pid: 37408
+cwd: "C:\Users\ACER\Desktop\AAOMS - Postgre"
+command: "cd \"C:\\Users\\ACER\\Desktop\\AAOMS - Postgre\\backend\"; npm run dev"
+started_at: 2026-06-20T09:38:20.756Z
+running_for_ms: 84985    
+---
+
+> aaxoms-backend@1.0.0 dev
+> nodemon server.js
+
+[nodemon] 2.0.22
+[nodemon] to restart at any time, enter `rs`
+[nodemon] watching path(s): server.js config controllers\**\* models\**\* routes\**\* middleware\**\* utils\**\*
+[nodemon] watching extensions: js,json
+[nodemon] starting `node server.js`
+(node:69808) Warning: SECURITY WARNING: The SSL modes 'prefer', 'require', and 'verify-ca' are treated as aliases for 'verify-full'.
+In the next major version (pg-connection-string v3.0.0 and pg v9.0.0), these modes will adopt standard libpq semantics, which have weaker security guarantees.
+
+To prepare for this change:
+- If you want the current behavior, explicitly use 'sslmode=verify-full'
+- If you want libpq compatibility now, use 'uselibpqcompat=true&sslmode=require'
+
+See https://www.postgresql.org/docs/current/libpq-ssl.html for libpq SSL mode definitions.
+(Use `node --trace-warnings ...` to show where the warning was created)
+✅ Connected to PostgreSQL (Neon) Successfully!
+📊 Database: neondb
+🕒 Server time: Sat Jun 20 2026 15:23:23 GMT+0545 (Nepal Time)
+✅ Database tables already exist. Skipping full initialization.
+✅ Database schema patches verified.
+❌ PostgreSQL connection error: pool is not defined
+
+❌ Port 5000 is already in use!
+   Retrying in 2 seconds...
+
+📁 Falling back to JSON file-based database
+
+[nodemon] clean exit - waiting for changes before restart

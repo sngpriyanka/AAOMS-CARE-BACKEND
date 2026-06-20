@@ -5,6 +5,7 @@ const { protect, adminOnly } = require('../middleware/roleMiddleware');
 
 // ==================== PUBLIC ROUTES ====================
 router.get('/', productController.getAllProducts);
+router.get('/resolve/:identifier', productController.getProductByIdentifier);
 router.get('/id/:id', productController.getProductById);
 router.get('/slug/:slug', productController.getProductBySlug);
 router.get('/customization/options', productController.getCustomizationOptions);

@@ -568,9 +568,13 @@ class PostgresDatabase {
     const pool = getPgPool();
     if (!pool) return null;
 
-    const conditions = ['(is_active IS NULL OR is_active = true)'];
+    const conditions = [];
     const values = [];
     let idx = 1;
+
+    if (options.view !== 'admin') {
+      conditions.push('(is_active IS NULL OR is_active = true)');
+    }
 
     if (Array.isArray(options.categories) && options.categories.length) {
       conditions.push(`category = ANY($${idx++})`);
@@ -597,10 +601,17 @@ class PostgresDatabase {
       values.push(Number(options.maxPrice));
     }
 
-    const where = `WHERE ${conditions.join(' AND ')}`;
+    if (options.excludeId) {
+      conditions.push(`id <> $${idx++}`);
+      values.push(String(options.excludeId));
+    }
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const limit = Math.min(Math.max(parseInt(options.limit, 10) || 10, 1), 100);
     const page = Math.max(parseInt(options.page, 10) || 1, 1);
     const offset = (page - 1) * limit;
+    const listColumns = 'id, name, slug, price, original_price, category, image, images, colors, quick_dry, is_active, created_at';
+    const selectClause = options.view === 'list' ? listColumns : '*';
 
     try {
       const countResult = await pool.query(
@@ -610,7 +621,7 @@ class PostgresDatabase {
       const total = countResult.rows[0]?.total || 0;
 
       const dataResult = await pool.query(
-        `SELECT * FROM products ${where} ORDER BY created_at DESC NULLS LAST LIMIT $${idx++} OFFSET $${idx++}`,
+        `SELECT ${selectClause} FROM products ${where} ORDER BY created_at DESC NULLS LAST LIMIT $${idx++} OFFSET $${idx++}`,
         [...values, limit, offset]
       );
 
@@ -788,6 +799,24 @@ class PostgresDatabase {
       return [];
     }
   }
+
+  static async readReviewsByProductId(productId) {
+    const pool = getPgPool();
+    if (!pool) return null;
+
+    try {
+      const { rows } = await pool.query(
+        `SELECT * FROM reviews
+         WHERE product_id = $1 AND (status = 'approved' OR status IS NULL)
+         ORDER BY created_at DESC NULLS LAST`,
+        [productId]
+      );
+      return this._normalizeMany(rows);
+    } catch (error) {
+      console.error('Postgres readReviewsByProductId error:', error.message);
+      return null;
+    }
+  }
 }
 
 // ==================== UNIFIED DATABASE CLASS ====================
@@ -844,6 +873,13 @@ class Database {
   static readProductsFiltered(options) {
     if (this._isPostgres()) {
       return this.postgresDB.readProductsFiltered(options);
+    }
+    return null;
+  }
+
+  static readReviewsByProductId(productId) {
+    if (this._isPostgres()) {
+      return this.postgresDB.readReviewsByProductId(productId);
     }
     return null;
   }

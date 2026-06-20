@@ -126,8 +126,22 @@ async function removeProductFromWishlists(productId) {
 }
 
 async function deleteProductReviews(productId) {
-  const reviews = await Database.readAll(REVIEWS);
   const pid = normalizeId(productId);
+
+  if (Database._isPostgres && Database._isPostgres()) {
+    try {
+      const { getPool } = require('../models/postgres');
+      const pool = getPool();
+      if (pool) {
+        const result = await pool.query('DELETE FROM reviews WHERE product_id = $1', [pid]);
+        return { reviewsDeleted: result.rowCount || 0 };
+      }
+    } catch (err) {
+      console.error('Postgres bulk review delete failed, falling back:', err.message);
+    }
+  }
+
+  const reviews = await Database.readAll(REVIEWS);
   const matching = reviews.filter((review) => normalizeId(review.productId) === pid);
 
   for (const review of matching) {

@@ -5,7 +5,35 @@ const { cascadeProductDeletion } = require('../utils/productCascade');
 const { v4: uuidv4 } = require('uuid');
 const PRODUCTS_COLLECTION = 'products';
 
-const normalizeProductPayload = (body) => {
+const isProductActive = (product) => product && product.isActive !== false;
+
+const resolveProduct = async (identifier) => {
+  const key = String(identifier || '').trim();
+  if (!key) return null;
+
+  let product = await Database.read(PRODUCTS_COLLECTION, key);
+  if (!product) {
+    product = await Database.findBy(PRODUCTS_COLLECTION, 'slug', key);
+  }
+
+  return isProductActive(product) ? product : null;
+};
+
+const buildProductSlug = (body, existingProduct = null) => {
+  if (typeof body.slug === 'string' && body.slug.trim()) {
+    return body.slug.trim();
+  }
+  if (existingProduct?.slug) {
+    return existingProduct.slug;
+  }
+  const base = String(body.name || existingProduct?.name || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+  return `${base}-${uuidv4().slice(0, 4)}`;
+};
+
+const normalizeProductPayload = (body, existingProduct = null) => {
   const image = body.image || body.images?.[0] || '';
   const description = typeof body.description === 'string'
     ? { tagline: body.description, details: body.description }
@@ -16,7 +44,7 @@ const normalizeProductPayload = (body) => {
   // and cause Postgres INSERT 500 errors on create/update.
   return {
     name: body.name,
-    slug: (body.slug || String(body.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')) + '-' + uuidv4().slice(0, 4),
+    slug: buildProductSlug(body, existingProduct),
     price: Number(body.price),
     originalPrice: body.originalPrice ? Number(body.originalPrice) : null,
     description,
@@ -42,8 +70,8 @@ const CATEGORY_ALIASES = {
   scrub: ['scrub', 'scrubs'],
 };
 
-const filterProductsInMemory = (products, { category, minPrice, maxPrice, search }) => {
-  let next = products.filter(p => p.isActive !== false);
+const filterProductsInMemory = (products, { category, minPrice, maxPrice, search, excludeId, view }) => {
+  let next = view === 'admin' ? products : products.filter(p => p.isActive !== false);
 
   if (category) {
     const allowed = CATEGORY_ALIASES[category] || [category];
@@ -67,12 +95,16 @@ const filterProductsInMemory = (products, { category, minPrice, maxPrice, search
     );
   }
 
+  if (excludeId) {
+    next = next.filter(p => (p.id || p._id) !== excludeId);
+  }
+
   return next;
 };
 
 exports.getAllProducts = async (req, res) => {
   try {
-    const { category, minPrice, maxPrice, search, page = 1, limit = 10 } = req.query;
+    const { category, minPrice, maxPrice, search, page = 1, limit = 10, excludeId, view } = req.query;
     const pageNum = Math.max(parseInt(page, 10) || 1, 1);
     const limitNum = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);
 
@@ -81,6 +113,8 @@ exports.getAllProducts = async (req, res) => {
       minPrice,
       maxPrice,
       search,
+      excludeId,
+      view,
       page: pageNum,
       limit: limitNum,
     });
@@ -99,7 +133,7 @@ exports.getAllProducts = async (req, res) => {
     }
 
     let products = await Database.readAll(PRODUCTS_COLLECTION);
-    products = filterProductsInMemory(products, { category, minPrice, maxPrice, search });
+    products = filterProductsInMemory(products, { category, minPrice, maxPrice, search, excludeId, view });
 
     const skip = (pageNum - 1) * limitNum;
     const paginatedProducts = products.slice(skip, skip + limitNum);
@@ -123,28 +157,37 @@ exports.getAllProducts = async (req, res) => {
   }
 };
 
+const sendResolvedProduct = async (res, identifier) => {
+  const product = await resolveProduct(identifier);
+
+  if (!product) {
+    return res.status(404).json({
+      success: false,
+      message: 'Product not found'
+    });
+  }
+
+  return res.json({
+    success: true,
+    data: product
+  });
+};
+
+exports.getProductByIdentifier = async (req, res) => {
+  try {
+    await sendResolvedProduct(res, req.params.identifier);
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching product',
+      error: error.message
+    });
+  }
+};
+
 exports.getProductById = async (req, res) => {
   try {
-    const { id } = req.params;
-    let product = await Database.read(PRODUCTS_COLLECTION, id);
-
-    // Fallback: if the "id" param was actually a slug, still resolve the product.
-    if (!product) {
-      const products = await Database.readAll(PRODUCTS_COLLECTION);
-      product = products.find(p => p.slug === id);
-    }
-
-    if (!product) {
-      return res.status(404).json({
-        success: false,
-        message: 'Product not found'
-      });
-    }
-
-    res.json({
-      success: true,
-      data: product
-    });
+    await sendResolvedProduct(res, req.params.id);
   } catch (error) {
     res.status(500).json({
       success: false,
@@ -156,33 +199,7 @@ exports.getProductById = async (req, res) => {
 
 exports.getProductBySlug = async (req, res) => {
   try {
-    const { slug } = req.params;
-    const products = await Database.readAll(PRODUCTS_COLLECTION);
-
-    // First try exact slug match
-    let product = products.find(p => p.slug === slug);
-
-    // Fallback: if someone passed an ID (UUID or numeric) to the slug route, still resolve it.
-    // This makes the frontend more tolerant and prevents 404s when mixing id/slug in links.
-    if (!product) {
-      product = products.find(p => 
-        (p.id && p.id === slug) || 
-        (p._id && p._id === slug) ||
-        (p.id && String(p.id) === slug)
-      );
-    }
-
-    if (!product) {
-      return res.status(404).json({
-        success: false,
-        message: 'Product not found'
-      });
-    }
-
-    res.json({
-      success: true,
-      data: product
-    });
+    await sendResolvedProduct(res, req.params.slug);
   } catch (error) {
     res.status(500).json({
       success: false,
@@ -244,8 +261,17 @@ exports.updateProduct = async (req, res) => {
     }
 
     const { id } = req.params;
+    const existingProduct = await Database.read(PRODUCTS_COLLECTION, id);
+
+    if (!existingProduct) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
+      });
+    }
+
     const updated = await Database.update(PRODUCTS_COLLECTION, id, {
-      ...normalizeProductPayload(req.body),
+      ...normalizeProductPayload(req.body, existingProduct),
       updatedAt: new Date().toISOString()
     });
 
@@ -289,16 +315,22 @@ exports.deleteProduct = async (req, res) => {
       });
     }
 
-    const cascade = await cascadeProductDeletion(product);
-    await Database.delete(PRODUCTS_COLLECTION, id);
+    const deleted = await Database.delete(PRODUCTS_COLLECTION, id);
+    if (!deleted) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to delete product from database'
+      });
+    }
 
     res.json({
       success: true,
-      message: 'Product deleted and removed from all related records',
-      data: {
-        id,
-        cascade,
-      },
+      message: 'Product deleted successfully',
+      data: { id },
+    });
+
+    cascadeProductDeletion(product).catch((err) => {
+      console.error('Background cascade cleanup failed:', err);
     });
   } catch (error) {
     console.error('deleteProduct error:', error);

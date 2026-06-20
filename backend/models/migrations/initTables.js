@@ -386,6 +386,7 @@ const initializeTables = async (client) => {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pending_payments_order ON pending_payments(purchase_order_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pending_payments_expires ON pending_payments(expires_at);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_reviews_product ON reviews(product_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_reviews_product_status ON reviews(product_id, status);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_activity_logs_created_at ON activity_logs(created_at);`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_activity_logs_by ON activity_logs(by);`).catch(() => {});

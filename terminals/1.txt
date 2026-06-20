@@ -1,0 +1,14 @@
+---
+pid: 70604
+cwd: "C:\Users\ACER\Desktop\AAOMS - Postgre"
+command: "cd \"C:\\Users\\ACER\\Desktop\\AAOMS - Postgre\\frontend\"; npm start"
+started_at: 2026-06-19T20:23:23.652Z
+running_for_ms: 2184995  
+---
+
+> aaoms-frontend@1.0.0 start
+> react-scripts start
+
+Something is already running on port 3000.
+(node:9124) [DEP0176] DeprecationWarning: fs.F_OK is deprecated, use fs.constants.F_OK instead
+(Use `node --trace-deprecation ...` to show where the warning was created)
