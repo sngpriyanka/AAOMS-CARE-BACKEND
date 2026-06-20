@@ -597,11 +597,12 @@ function getOtpStoreKey(type, identifier) {
 
 exports.sendOtp = async (req, res) => {
   try {
-    const { phone, email, purpose = 'signup', recaptchaToken } = req.body;
-
-    if (recaptchaToken) {
-      console.log('[OTP] reCAPTCHA token received');
-    }
+    const { phone, email, purpose = 'signup' } = req.body;
+    // reCAPTCHA temporarily disabled
+    // const { recaptchaToken } = req.body;
+    // if (recaptchaToken) {
+    //   console.log('[OTP] reCAPTCHA token received');
+    // }
 
     const code = generateOtpCode();
     const hashedCode = await bcrypt.hash(code, 10);
