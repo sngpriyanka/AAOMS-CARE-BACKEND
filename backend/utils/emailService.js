@@ -4,12 +4,26 @@ const Database = require('../models/DatabaseAdapter');
 let cachedTransporter = null;
 
 function getSmtpCredentials() {
+  const rawPass = process.env.SMTP_PASS || process.env.EMAIL_PASSWORD || '';
   return {
     user: process.env.SMTP_USER || process.env.SMTP_MAIL || process.env.EMAIL_USER || '',
-    pass: process.env.SMTP_PASS || process.env.EMAIL_PASSWORD || '',
+    // Gmail app passwords are often copied with spaces — strip them for reliable auth
+    pass: String(rawPass).replace(/\s+/g, ''),
     service: process.env.SMTP_SERVICE || process.env.EMAIL_SERVICE || 'gmail',
   };
 }
+
+function isSmtpConfigured() {
+  const hasHost = !!process.env.SMTP_HOST;
+  const { user, pass } = getSmtpCredentials();
+  return hasHost || !!(user && pass);
+}
+
+const SMTP_TRANSPORT_OPTIONS = {
+  connectionTimeout: 10000,
+  greetingTimeout: 10000,
+  socketTimeout: 15000,
+};
 
 function getTransporter() {
   if (cachedTransporter) return cachedTransporter;
@@ -28,12 +42,14 @@ function getTransporter() {
         host: process.env.SMTP_HOST,
         port: parseInt(process.env.SMTP_PORT || '587', 10),
         secure: process.env.SMTP_SECURE === 'true',
-        auth: { user, pass }
+        auth: { user, pass },
+        ...SMTP_TRANSPORT_OPTIONS,
       });
     } else {
       cachedTransporter = nodemailer.createTransport({
         service,
-        auth: { user, pass }
+        auth: { user, pass },
+        ...SMTP_TRANSPORT_OPTIONS,
       });
     }
     return cachedTransporter;
@@ -503,11 +519,72 @@ async function sendSignupOtpEmail(email, code) {
   return sendEmail({ to: email, subject, html, text });
 }
 
+async function sendWelcomeEmail(toEmail) {
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+  const subject = 'Welcome to the AAOMS Club ✨';
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: system-ui, -apple-system, Arial, sans-serif; background:#f8f8f8; padding:20px; }
+        .container { max-width:560px; margin:0 auto; background:#fff; border-radius:12px; overflow:hidden; box-shadow:0 4px 20px rgba(0,0,0,0.06); }
+        .header { background:#1a1a1a; color:#fff; padding:28px 24px; text-align:center; }
+        .logo { font-size:22px; letter-spacing:3px; font-weight:700; }
+        .content { padding:32px 28px; color:#333; line-height:1.6; }
+        .btn { display:inline-block; background:#c9a227; color:#000; font-weight:600; padding:12px 28px; border-radius:6px; text-decoration:none; margin:16px 0; }
+        .footer { padding:18px 28px; background:#f8f8f8; color:#777; font-size:12px; text-align:center; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <div class="logo">AAOMS</div>
+          <div style="margin-top:6px;opacity:0.8;font-size:12px;letter-spacing:1.5px;">THE CLUB</div>
+        </div>
+        <div class="content">
+          <h2 style="margin:0 0 12px;font-size:20px;color:#111;">Welcome to the AAOMS Club!</h2>
+          <p>Thank you for subscribing. You'll be the first to know about new launches, exclusive drops, and special offers.</p>
+          <p style="margin:20px 0 0;">Explore our latest collections:</p>
+          <a href="${frontendUrl}/collection" class="btn">SHOP NOW</a>
+        </div>
+        <div class="footer">
+          You can unsubscribe anytime from the link in future emails.<br/>
+          © ${new Date().getFullYear()} AAOMS. All rights reserved.
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  const text = `Welcome to the AAOMS Club!
+
+Thank you for subscribing. You'll be the first to know about new launches, exclusive drops, and special offers.
+
+Shop now: ${frontendUrl}/collection
+
+© ${new Date().getFullYear()} AAOMS. All rights reserved.`;
+
+  return sendEmail({ to: toEmail, subject, html, text });
+}
+
+/** Fire-and-forget welcome email — never blocks the subscribe HTTP response */
+function queueWelcomeEmail(toEmail) {
+  if (!isSmtpConfigured() || !toEmail) return;
+  sendWelcomeEmail(toEmail).catch((err) => {
+    console.warn('[EmailService] Welcome email failed (non-fatal):', err.message);
+  });
+}
+
 module.exports = {
   sendEmail,
   sendSignupOtpEmail,
   sendAdminNewOrderEmail,
   sendOrderStatusEmail,
+  sendWelcomeEmail,
+  queueWelcomeEmail,
+  isSmtpConfigured,
   getTransporter,
   getRecipientEmail,
   getAdminNotificationEmails,

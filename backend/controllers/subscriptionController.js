@@ -1,6 +1,6 @@
 const Database = require('../models/DatabaseAdapter');
 const { v4: uuidv4 } = require('uuid');
-const { validateEmail: backendValidateEmail } = require('../utils/validators');
+const { queueWelcomeEmail, isSmtpConfigured } = require('../utils/emailService');
 
 const COLLECTION = 'subscribers';
 
@@ -38,9 +38,13 @@ exports.subscribe = async (req, res) => {
         source,
         updatedAt: new Date().toISOString()
       });
+      queueWelcomeEmail(normalizedEmail);
+      const welcomeNote = isSmtpConfigured()
+        ? ' Check your email for a welcome note.'
+        : '';
       return res.status(200).json({
         success: true,
-        message: 'Welcome back! You have been resubscribed to the AAOMS Club.',
+        message: `Welcome back! You have been resubscribed to the AAOMS Club.${welcomeNote}`,
         data: reactivated
       });
     }
@@ -56,20 +60,18 @@ exports.subscribe = async (req, res) => {
       updatedAt: new Date().toISOString()
     });
 
-    // Optional welcome email (best effort, never fail subscribe)
-    if (process.env.SMTP_HOST || process.env.SMTP_SERVICE || process.env.SMTP_MAIL) {
-      try {
-        await sendWelcomeEmail(normalizedEmail);
-      } catch (e) {
-        console.warn('Welcome email failed (non-fatal):', e.message);
-      }
-    }
-
+    // Respond immediately — welcome email is sent in the background
+    const welcomeNote = isSmtpConfigured()
+      ? ' Check your email for a welcome note.'
+      : '';
     res.status(201).json({
       success: true,
-      message: 'Thank you for joining the AAOMS Club! Check your email for a welcome note.',
+      message: `Thank you for joining the AAOMS Club!${welcomeNote}`,
       data: { id: subscriber.id, email: subscriber.email }
     });
+
+    queueWelcomeEmail(normalizedEmail);
+    return;
   } catch (error) {
     console.error('Subscribe error:', error);
     // Handle unique violation gracefully
@@ -86,75 +88,6 @@ exports.subscribe = async (req, res) => {
     });
   }
 };
-
-// Internal helper: send a nice welcome email
-async function sendWelcomeEmail(toEmail) {
-  const nodemailer = require('nodemailer');
-
-  let transporter;
-  if (process.env.SMTP_HOST) {
-    transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: parseInt(process.env.SMTP_PORT || '587'),
-      secure: process.env.SMTP_SECURE === 'true',
-      auth: {
-        user: process.env.SMTP_USER || process.env.SMTP_MAIL,
-        pass: process.env.SMTP_PASS
-      }
-    });
-  } else {
-    transporter = nodemailer.createTransport({
-      service: process.env.SMTP_SERVICE || 'gmail',
-      auth: {
-        user: process.env.SMTP_MAIL,
-        pass: process.env.SMTP_PASS
-      }
-    });
-  }
-
-  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-  const from = process.env.EMAIL_FROM || `"AAOMS Club" <${process.env.SMTP_MAIL || process.env.SMTP_USER}>`;
-
-  await transporter.sendMail({
-    from,
-    to: toEmail,
-    subject: 'Welcome to the AAOMS Club ✨',
-    html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <style>
-          body { font-family: system-ui, -apple-system, Arial, sans-serif; background:#f8f8f8; padding:20px; }
-          .container { max-width:560px; margin:0 auto; background:#fff; border-radius:12px; overflow:hidden; box-shadow:0 4px 20px rgba(0,0,0,0.06); }
-          .header { background:#1a1a1a; color:#fff; padding:28px 24px; text-align:center; }
-          .logo { font-size:22px; letter-spacing:3px; font-weight:700; }
-          .content { padding:32px 28px; color:#333; line-height:1.6; }
-          .btn { display:inline-block; background:#c9a227; color:#000; font-weight:600; padding:12px 28px; border-radius:6px; text-decoration:none; margin:16px 0; }
-          .footer { padding:18px 28px; background:#f8f8f8; color:#777; font-size:12px; text-align:center; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <div class="logo">AAOMS</div>
-            <div style="margin-top:6px;opacity:0.8;font-size:12px;letter-spacing:1.5px;">THE CLUB</div>
-          </div>
-          <div class="content">
-            <h2 style="margin:0 0 12px;font-size:20px;color:#111;">Welcome to the AAOMS Club!</h2>
-            <p>Thank you for subscribing. You'll be the first to know about new launches, exclusive drops, and special offers.</p>
-            <p style="margin:20px 0 0;">Explore our latest collections:</p>
-            <a href="${frontendUrl}/collection" class="btn">SHOP NOW</a>
-          </div>
-          <div class="footer">
-            You can unsubscribe anytime from the link in future emails.<br/>
-            © ${new Date().getFullYear()} AAOMS. All rights reserved.
-          </div>
-        </div>
-      </body>
-      </html>
-    `
-  });
-}
 
 // Admin: Get all subscribers (active + inactive)
 exports.getAllSubscribers = async (req, res) => {

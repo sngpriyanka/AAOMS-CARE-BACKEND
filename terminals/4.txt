@@ -1,0 +1,8 @@
+---
+pid: 42536
+cwd: "C:\Users\ACER\Desktop\AAOMS - Postgre"
+command: "cd \"C:\\Users\\ACER\\Desktop\\AAOMS - Postgre\\backend\"; node -e \"require('./controllers/paymentController'); require('./controllers/addressController'); console.log('OK')\""
+started_at: 2026-06-20T10:59:00.423Z
+running_for_ms: 2210004  
+---
+OK

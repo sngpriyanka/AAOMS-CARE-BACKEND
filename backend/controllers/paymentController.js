@@ -377,6 +377,67 @@ async function createOrderAfterPayment({ userId, orderId, paymentMethod, transac
   }
 }
 
+/** Whole NPR amounts as strings — must match exactly in signature + form POST. */
+const toEsewaAmountStr = (value) => {
+  return String(Math.max(0, Math.round(parseFloat(value) || 0)));
+};
+
+const parseEsewaAmount = (value) => {
+  return Math.max(0, Math.round(parseFloat(value) || 0));
+};
+
+const sanitizeEsewaTransactionUuid = (id) => {
+  const cleaned = String(id || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9-]/g, '')
+    .slice(0, 40);
+  return cleaned || `AAOMS-${Date.now()}`;
+};
+
+const buildEsewaFormPayload = ({
+  amount,
+  purchaseOrderId,
+  successUrl,
+  failureUrl,
+  productCode,
+  secretKey,
+}) => {
+  const taxAmountStr = '0';
+  const serviceChargeStr = '0';
+  const deliveryChargeStr = '0';
+  const totalAmountStr = toEsewaAmountStr(amount);
+  const productAmountStr = toEsewaAmountStr(
+    parseEsewaAmount(amount)
+      - parseEsewaAmount(taxAmountStr)
+      - parseEsewaAmount(serviceChargeStr)
+      - parseEsewaAmount(deliveryChargeStr)
+  );
+  const transactionUuid = sanitizeEsewaTransactionUuid(purchaseOrderId);
+
+  const signedFieldNames = 'total_amount,transaction_uuid,product_code';
+  const message = `total_amount=${totalAmountStr},transaction_uuid=${transactionUuid},product_code=${productCode}`;
+  const signature = crypto.createHmac('sha256', secretKey).update(message).digest('base64');
+
+  return {
+    transactionUuid,
+    totalAmount: parseEsewaAmount(totalAmountStr),
+    message,
+    formData: {
+      amount: productAmountStr,
+      tax_amount: taxAmountStr,
+      total_amount: totalAmountStr,
+      transaction_uuid: transactionUuid,
+      product_code: productCode,
+      product_service_charge: serviceChargeStr,
+      product_delivery_charge: deliveryChargeStr,
+      success_url: successUrl,
+      failure_url: failureUrl,
+      signed_field_names: signedFieldNames,
+      signature,
+    },
+  };
+};
+
 /**
  * Real eSewa v2 Transaction Status Verification
  * This is the proper way to verify after redirect.
@@ -384,8 +445,8 @@ async function createOrderAfterPayment({ userId, orderId, paymentMethod, transac
 async function verifyEsewaTransactionStatus({ oid, amt, refId }) {
   const productCode = process.env.ESEWA_MERCHANT_ID || 'EPAYTEST';
 
-  const totalAmount = Math.round(parseFloat(amt) || 0);
-  if (!oid || !totalAmount) {
+  const totalAmount = parseEsewaAmount(amt);
+  if (!oid || totalAmount <= 0) {
     return { verified: false, error: 'Missing oid or amount for status check' };
   }
 
@@ -871,25 +932,39 @@ const initiateEsewaPayment = async (req, res) => {
     }
 
     // Basic sanity for eSewa (helps avoid 428 precondition on their end)
-    const numericAmount = parseFloat(amount);
-    if (isNaN(numericAmount) || numericAmount <= 0) {
+    const productCode = process.env.ESEWA_MERCHANT_ID || 'EPAYTEST';
+    const secretKey = process.env.ESEWA_SECRET_KEY || '8gBm/:&EnhH.1/q';
+
+    const resolvedSuccessUrl = success_url
+      || process.env.ESEWA_SUCCESS_URL
+      || `${process.env.FRONTEND_URL || 'http://localhost:3000'}/payment/success`;
+    const resolvedFailureUrl = failure_url
+      || process.env.ESEWA_FAILURE_URL
+      || `${process.env.FRONTEND_URL || 'http://localhost:3000'}/payment/failure`;
+
+    const esewaPayload = buildEsewaFormPayload({
+      amount,
+      purchaseOrderId: purchase_order_id,
+      successUrl: resolvedSuccessUrl,
+      failureUrl: resolvedFailureUrl,
+      productCode,
+      secretKey,
+    });
+
+    const { transactionUuid, totalAmount, formData: formDataForEsewa, message } = esewaPayload;
+
+    if (totalAmount <= 0) {
       return res.status(400).json({
         success: false,
         message: 'Invalid amount for eSewa payment'
       });
     }
 
-    const productCode = process.env.ESEWA_MERCHANT_ID || 'EPAYTEST';
-    const secretKey = process.env.ESEWA_SECRET_KEY || '8gBm/:&EnhH.1/q';
-
-    const transactionUuid = purchase_order_id;
-    const totalAmount = Math.round(parseFloat(amount));
-
     const userIdFromToken = getUserIdFromRequest(req);
 
     // Preferred security model: signed JWT (self-contained proof of initiation)
     const paymentJwt = generatePaymentJwt({
-      purchaseOrderId: purchase_order_id,
+      purchaseOrderId: transactionUuid,
       amount: totalAmount,
       userId: userIdFromToken
     });
@@ -901,7 +976,7 @@ const initiateEsewaPayment = async (req, res) => {
     // Make this non-fatal: the JWT is self-contained for security; the DB snapshot is best-effort for order reconstruction.
     try {
       await createPendingPayment({
-        purchaseOrderId: purchase_order_id,
+        purchaseOrderId: transactionUuid,
         amount: totalAmount,
         paymentToken: legacyToken,
         paymentJwt,
@@ -913,36 +988,15 @@ const initiateEsewaPayment = async (req, res) => {
       console.warn('[eSewa Initiate] Warning: Failed to persist pending payment record (proceeding anyway):', persistErr.message);
     }
 
-    // eSewa v2 signature
-    const signedFieldNames = 'total_amount,transaction_uuid,product_code';
-    const message = `total_amount=${totalAmount},transaction_uuid=${transactionUuid},product_code=${productCode}`;
-    const signature = crypto.createHmac('sha256', secretKey).update(message).digest('base64');
-
-    // Debug log for eSewa signature issues (common cause of 428 precondition errors)
-    console.log('[eSewa Initiate] Debug signature data:', {
-      productCode,
-      totalAmount,
-      transactionUuid,
-      message,
-      signature,
-      secretKeyLength: secretKey.length
-    });
-
-    const formDataForEsewa = {
-      amount: totalAmount,
-      tax_amount: 0,
-      total_amount: totalAmount,
-      transaction_uuid: transactionUuid,
-      product_code: productCode,
-      product_service_charge: 0,
-      product_delivery_charge: 0,
-      success_url: success_url || `${process.env.FRONTEND_URL || 'http://localhost:3000'}/payment/success`,
-      failure_url: failure_url || `${process.env.FRONTEND_URL || 'http://localhost:3000'}/payment/failure`,
-      signed_field_names: signedFieldNames,
-      signature
-    };
-
-    console.log('[eSewa Initiate] Form data being returned to client for submission:', formDataForEsewa);
+    if (process.env.NODE_ENV === 'development') {
+      console.log('[eSewa Initiate]', {
+        productCode,
+        totalAmount,
+        transactionUuid,
+        message,
+        formData: formDataForEsewa,
+      });
+    }
 
     const esewaFormUrl = 'https://rc-epay.esewa.com.np/api/epay/main/v2/form';
 
@@ -953,7 +1007,7 @@ const initiateEsewaPayment = async (req, res) => {
       data: {
         esewa_url: esewaFormUrl,
         paymentToken: paymentJwt,        // Now a signed JWT instead of random hex
-        purchase_order_id: purchase_order_id,
+        purchase_order_id: transactionUuid,
         form_data: formDataForEsewa
       }
     });

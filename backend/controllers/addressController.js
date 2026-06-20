@@ -5,12 +5,8 @@ const { v4: uuidv4 } = require('uuid');
 exports.getUserAddresses = async (req, res) => {
   try {
     const userId = req.user.id;
-    console.log('[Address Get] Fetching addresses for user:', userId);
-    
-    const allAddresses = await Database.readAll('addresses');
-    const userAddresses = allAddresses.filter(addr => addr.userId === userId);
 
-    console.log('[Address Get] Found', userAddresses.length, 'addresses for user');
+    const userAddresses = await Database.filterBy('addresses', 'userId', userId);
 
     res.json({
       success: true,

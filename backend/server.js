@@ -71,18 +71,23 @@ const connectDatabase = async () => {
       const { connectPostgres } = require('./models/postgres');
       pgPool = await connectPostgres();
 
-      if (pool) {
+      if (pgPool) {
         dbConnected = 'postgres';
+        Database.dbType = 'postgres';
         console.log('✅ PostgreSQL (Neon) ready via unified Database adapter\n');
       } else {
         console.log('📁 Falling back to JSON file-based database\n');
         dbConnected = 'json';
+        process.env.DATABASE_TYPE = 'json';
+        Database.dbType = 'json';
       }
       return;
     } catch (error) {
       console.error('❌ PostgreSQL connection error:', error.message);
       console.log('📁 Falling back to JSON file-based database\n');
       dbConnected = 'json';
+      process.env.DATABASE_TYPE = 'json';
+      Database.dbType = 'json';
       return;
     }
   }

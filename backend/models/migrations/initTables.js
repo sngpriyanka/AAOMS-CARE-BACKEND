@@ -476,10 +476,27 @@ const ensureTestimonialsTable = async (client) => {
   ).catch(() => {});
 };
 
+/** Idempotent patch for subscribers — safe to run on every server start. */
+const ensureSubscribersTable = async (client) => {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS subscribers (
+      id TEXT PRIMARY KEY,
+      email TEXT UNIQUE NOT NULL,
+      is_active BOOLEAN DEFAULT true,
+      source TEXT DEFAULT 'footer',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_subscribers_email ON subscribers(email);`).catch(() => {});
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_subscribers_active ON subscribers(is_active);`).catch(() => {});
+};
+
 const ensureSchemaPatches = async (client) => {
   await ensureAuthSchemaPatches(client);
   await ensureContactMessagesTable(client);
   await ensureTestimonialsTable(client);
+  await ensureSubscribersTable(client);
 };
 
 module.exports = {
@@ -487,5 +504,6 @@ module.exports = {
   ensureAuthSchemaPatches,
   ensureContactMessagesTable,
   ensureTestimonialsTable,
+  ensureSubscribersTable,
   ensureSchemaPatches
 };
