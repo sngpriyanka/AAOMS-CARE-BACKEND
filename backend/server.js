@@ -208,7 +208,7 @@ app.use(cors({
       'http://localhost:3000',
       'http://localhost:5000',
       'http://localhost:5173',
-      'https://aaoms-frontend.vercel.app',     // ← Your Vercel Frontend
+      'https://aaoms-frontend-new.vercel.app',     // ← Your Vercel Frontend
       'https://aaoms.onrender.com',            // Backend itself (if needed)
       'https://aaoms.online',
     'https://www.aaoms.online',          
