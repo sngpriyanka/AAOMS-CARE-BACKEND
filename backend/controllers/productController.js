@@ -2,6 +2,7 @@
 const Database = require('../models/DatabaseAdapter');
 const { validateProductData } = require('../utils/validators');
 const { cascadeProductDeletion } = require('../utils/productCascade');
+const { getMatchingCategories } = require('../utils/categories');
 const { v4: uuidv4 } = require('uuid');
 const PRODUCTS_COLLECTION = 'products';
 
@@ -63,18 +64,11 @@ const normalizeProductPayload = (body, existingProduct = null) => {
   };
 };
 
-const CATEGORY_ALIASES = {
-  't-shirts': ['t-shirts', 'tshirts'],
-  tshirts: ['t-shirts', 'tshirts'],
-  scrubs: ['scrub', 'scrubs'],
-  scrub: ['scrub', 'scrubs'],
-};
-
 const filterProductsInMemory = (products, { category, minPrice, maxPrice, search, excludeId, view }) => {
   let next = view === 'admin' ? products : products.filter(p => p.isActive !== false);
 
   if (category) {
-    const allowed = CATEGORY_ALIASES[category] || [category];
+    const allowed = getMatchingCategories(category);
     next = next.filter(p => allowed.includes(p.category));
   }
 
@@ -109,7 +103,7 @@ exports.getAllProducts = async (req, res) => {
     const limitNum = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);
 
     const pgResult = await Database.readProductsFiltered({
-      categories: category ? (CATEGORY_ALIASES[category] || [category]) : undefined,
+      categories: category ? getMatchingCategories(category) : undefined,
       minPrice,
       maxPrice,
       search,

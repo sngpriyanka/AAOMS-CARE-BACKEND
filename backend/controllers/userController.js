@@ -2,19 +2,12 @@ const Database = require('../models/DatabaseAdapter');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
-
-function normalizePhone10(phone) {
-  if (!phone) return '';
-  const digits = String(phone).replace(/\D/g, '');
-  if (digits.length === 13 && digits.startsWith('977')) return digits.slice(3);
-  if (digits.length === 10) return digits;
-  return digits.slice(-10);
-}
-
-function formatNepalPhone(phone10) {
-  if (!phone10) return '';
-  return phone10.startsWith('+') ? phone10 : `+977${phone10}`;
-}
+const {
+  toPhone10,
+  formatIndianPhone,
+  validatePhoneOrEmpty,
+  INDIAN_MOBILE_ERROR,
+} = require('../utils/phoneUtils');
 
 const USERS_COLLECTION = 'users';
 const ADMINS_COLLECTION = 'admins';
@@ -142,8 +135,13 @@ exports.updateUserProfile = async (req, res) => {
     if (name) updates.name = name;
 
     if (phone !== undefined) {
-      const newPhone10 = normalizePhone10(phone);
-      const currentPhone10 = normalizePhone10(existingUser.phone || '');
+      const phoneCheck = validatePhoneOrEmpty(phone);
+      if (!phoneCheck.valid) {
+        return res.status(400).json({ success: false, message: phoneCheck.message || INDIAN_MOBILE_ERROR });
+      }
+
+      const newPhone10 = phoneCheck.normalized;
+      const currentPhone10 = toPhone10(existingUser.phone || '');
       const phoneIsChanging = newPhone10 !== currentPhone10;
 
       if (PROFILE_PHONE_OTP_ENABLED && phoneIsChanging && newPhone10) {
@@ -167,7 +165,7 @@ exports.updateUserProfile = async (req, res) => {
         }
       }
 
-      updates.phone = newPhone10 ? formatNepalPhone(newPhone10) : '';
+      updates.phone = newPhone10 ? formatIndianPhone(newPhone10) : '';
     }
     if (address !== undefined) updates.address = address;
     if (city !== undefined) updates.city = city;
@@ -676,12 +674,21 @@ exports.createAdmin = async (req, res) => {
     const hashed = await bcrypt.hash(plainPassword, 12);
     const newId = (crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2)));
 
+    let normalizedPhone = '';
+    if (phone) {
+      const phoneCheck = validatePhoneOrEmpty(phone);
+      if (!phoneCheck.valid) {
+        return res.status(400).json({ success: false, message: phoneCheck.message || INDIAN_MOBILE_ERROR });
+      }
+      normalizedPhone = phoneCheck.normalized ? formatIndianPhone(phoneCheck.normalized) : '';
+    }
+
     const adminRecord = {
       id: newId,
       email: normalizedEmail,
       password: hashed,
       name: name.trim(),
-      phone: phone || '',
+      phone: normalizedPhone,
       role,
       permissions,
       isActive: true,
@@ -748,7 +755,13 @@ exports.updateAdmin = async (req, res) => {
     // Prevent changing own role away from super_admin if you are the only one? (soft: allow but log)
     const updates = {};
     if (name) updates.name = name.trim();
-    if (phone !== undefined) updates.phone = phone;
+    if (phone !== undefined) {
+      const phoneCheck = validatePhoneOrEmpty(phone);
+      if (!phoneCheck.valid) {
+        return res.status(400).json({ success: false, message: phoneCheck.message || INDIAN_MOBILE_ERROR });
+      }
+      updates.phone = phoneCheck.normalized ? formatIndianPhone(phoneCheck.normalized) : '';
+    }
     if (permissions) updates.permissions = Array.isArray(permissions) ? permissions : [];
     if (role && ADMIN_ROLES.includes(role)) {
       // Safety: do not let last super_admin demote self via update

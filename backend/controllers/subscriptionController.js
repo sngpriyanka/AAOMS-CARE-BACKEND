@@ -26,7 +26,7 @@ exports.subscribe = async (req, res) => {
     if (existing && existing.isActive !== false) {
       return res.status(200).json({
         success: true,
-        message: 'You are already subscribed to the AAOMS Club!',
+        message: 'You are already subscribed to the AAOMS CARE Club!',
         alreadySubscribed: true
       });
     }
@@ -44,7 +44,7 @@ exports.subscribe = async (req, res) => {
         : '';
       return res.status(200).json({
         success: true,
-        message: `Welcome back! You have been resubscribed to the AAOMS Club.${welcomeNote}`,
+        message: `Welcome back! You have been resubscribed to the AAOMS CARE Club.${welcomeNote}`,
         data: reactivated
       });
     }
@@ -66,7 +66,7 @@ exports.subscribe = async (req, res) => {
       : '';
     res.status(201).json({
       success: true,
-      message: `Thank you for joining the AAOMS Club!${welcomeNote}`,
+      message: `Thank you for joining the AAOMS CARE Club!${welcomeNote}`,
       data: { id: subscriber.id, email: subscriber.email }
     });
 
@@ -78,7 +78,7 @@ exports.subscribe = async (req, res) => {
     if (error.message && /unique|duplicate|already exists/i.test(error.message)) {
       return res.status(200).json({
         success: true,
-        message: 'You are already subscribed to the AAOMS Club!',
+        message: 'You are already subscribed to the AAOMS CARE Club!',
         alreadySubscribed: true
       });
     }
@@ -162,7 +162,7 @@ exports.sendNewsletter = async (req, res) => {
       });
     }
 
-    const from = process.env.EMAIL_FROM || `"AAOMS Club" <${process.env.SMTP_MAIL || process.env.SMTP_USER}>`;
+    const from = process.env.EMAIL_FROM || `"AAOMS CARE Club" <${process.env.SMTP_MAIL || process.env.SMTP_USER}>`;
     const frontendUrl = [
             'http://localhost:3000',
       'http://localhost:5000',
@@ -188,10 +188,10 @@ exports.sendNewsletter = async (req, res) => {
           <div style="font-family:Arial,Helvetica,sans-serif;max-width:620px;margin:0 auto;color:#222;line-height:1.6">
             <h2 style="color:#111;margin-bottom:16px">${subject}</h2>
             <div>${(message || '').replace(/\n/g, '<br/>')}</div>
-            <p style="margin-top:28px;font-size:13px;color:#666">Thank you for being part of the AAOMS Club.</p>
+            <p style="margin-top:28px;font-size:13px;color:#666">Thank you for being part of the AAOMS CARE Club.</p>
             <p style="font-size:12px;margin-top:24px"><a href="${unsubscribeLink}" style="color:#999">Unsubscribe</a></p>
             <hr style="border:none;border-top:1px solid #eee;margin:24px 0" />
-            <p style="font-size:11px;color:#888">© AAOMS — Worldwide travel-inspired fashion since 2019</p>
+            <p style="font-size:11px;color:#888">© AAOMS CARE — Trusted Healthcare Solutions Dedicated to Better Living</p>
           </div>
         `;
 
@@ -240,7 +240,7 @@ exports.unsubscribe = async (req, res) => {
     }
 
     await Database.update(COLLECTION, existing.id || existing._id, { isActive: false, updatedAt: new Date().toISOString() });
-    res.json({ success: true, message: 'You have been unsubscribed from AAOMS Club emails.' });
+    res.json({ success: true, message: 'You have been unsubscribed from AAOMS CARE Club emails.' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Unsubscribe failed' });
   }

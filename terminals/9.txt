@@ -1,0 +1,20 @@
+---
+pid: 21256
+cwd: "C:\Users\ACER\Desktop\AAOMS - India"
+command: "cd \"C:\\Users\\ACER\\Desktop\\AAOMS - India\"; node test-payment-ctrl.js"
+started_at: 2026-06-22T18:07:53.396Z
+running_for_ms: 555003   
+---
+Controller keys: [
+  'getPaymentMethods',
+  'verifyRazorpayPayment',
+  'verifyKhaltiPayment',
+  'initiateRazorpayPayment',
+  'initiateKhaltiEpayment',
+  'getAdminRevenueSummary',
+  'getAdminPayments'
+]
+✅ All 7 payment handlers exported as functions
+getPaymentMethods OK, data count: 2
+✅ getPaymentMethods works
+SUCCESS: payment controller fixed

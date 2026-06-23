@@ -10,30 +10,20 @@ function sanitizeToken(raw) {
   return String(raw).trim().split(/\s+/)[0];
 }
 
-/**
- * Sparrow SMS expects comma-separated 10-digit Nepal mobile numbers.
- * Do NOT prefix with 977.
- */
-function normalizeNepalPhone(phone) {
-  const digits = String(phone || '').replace(/\D/g, '');
-  if (digits.length === 10) return digits;
-  if (digits.length === 13 && digits.startsWith('977')) return digits.slice(3);
-  if (digits.length > 10) return digits.slice(-10);
-  return digits;
-}
+const { toPhone10, isValidIndianMobile } = require('./phoneUtils');
 
 const sendSms = async (phone, message) => {
   const token = sanitizeToken(process.env.SPARROW_TOKEN);
   const sender = (process.env.SPARROW_SENDER || 'Demo').trim();
-  const to = normalizeNepalPhone(phone);
+  const to = toPhone10(phone);
 
   if (!token) {
     console.warn('[Sparrow SMS] SPARROW_TOKEN not set in env. SMS will not be sent (dev mode).');
     return { success: true, dev: true };
   }
 
-  if (!/^\d{10}$/.test(to)) {
-    throw new Error(`Invalid phone number for SMS. Expected 10 digits, got: ${phone}`);
+  if (!isValidIndianMobile(to)) {
+    throw new Error(`Invalid Indian mobile number for SMS. Expected 10 digits starting with 6-9, got: ${phone}`);
   }
 
   if (!sender) {
@@ -105,4 +95,4 @@ const sendSms = async (phone, message) => {
   });
 };
 
-module.exports = { sendSms, sanitizeToken, normalizeNepalPhone };
+module.exports = { sendSms, sanitizeToken };

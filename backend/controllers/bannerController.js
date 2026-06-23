@@ -43,14 +43,8 @@ exports.getBanners = async (req, res) => {
     let banners = await Database.readAll(COLLECTION);
     banners = banners.filter(banner => banner.isActive !== false);
     if (page) {
-      // Support legacy/aliased page keys for t-shirts and scrubs (e.g. "tshirts" <-> "t-shirts")
-      const pageAliases = {
-        't-shirts': ['t-shirts', 'tshirts'],
-        tshirts: ['t-shirts', 'tshirts'],
-        scrubs: ['scrub', 'scrubs'],
-        scrub: ['scrub', 'scrubs'],
-      };
-      const allowedPages = pageAliases[page] || [page];
+      const { getMatchingCategories } = require('../utils/categories');
+      const allowedPages = getMatchingCategories(page);
       banners = banners.filter(banner => {
         const bp = banner.pages || [];
         return allowedPages.some(p => bp.includes(p));

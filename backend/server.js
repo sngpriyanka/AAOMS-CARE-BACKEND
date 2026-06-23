@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const path = require('path');
 const compression = require('compression');
 
 dotenv.config();
@@ -41,153 +40,29 @@ if (missingEnvVars.length > 0) {
 }
 
 // Warn about payment configuration
-if (!process.env.ESEWA_MERCHANT_ID || !process.env.ESEWA_SECRET_KEY) {
-  console.warn('⚠️  eSewa credentials not fully configured. Using test mode.');
-}
-if (!process.env.KHALTI_SECRET_KEY) {
-  console.warn('⚠️  Khalti secret key not configured. Khalti payments will be disabled.');
+if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+  console.warn('⚠️  Razorpay credentials not configured. Razorpay payments will be disabled.');
 }
 
-// ==================== Import Database & Models ====================
+
+// ==================== Import Database ====================
 const Database = require('./models/DatabaseAdapter');
-let mongoModels = null;
 
-// ==================== Database Connection (MongoDB / Postgres / JSON) ====================
+// ==================== Database Connection (PostgreSQL / Neon) ====================
 let dbConnected = false;
 
 const connectDatabase = async () => {
-  const dbType = (process.env.DATABASE_TYPE || 'json').toLowerCase();
+  const { connectPostgres } = require('./models/postgres');
+  pgPool = await connectPostgres();
 
-  // --- JSON (default / fallback) ---
-  if (dbType === 'json' || !dbType) {
-    console.log('📁 Using JSON file-based database\n');
-    dbConnected = 'json';
-    return;
+  if (!pgPool) {
+    console.error('❌ PostgreSQL connection required. Set DATABASE_URL in .env');
+    process.exit(1);
   }
 
-  // --- PostgreSQL / Neon ---
-  if (dbType === 'postgres' || dbType === 'postgresql' || dbType === 'neon' || dbType === 'pg') {
-    try {
-      const { connectPostgres } = require('./models/postgres');
-      pgPool = await connectPostgres();
-
-      if (pgPool) {
-        dbConnected = 'postgres';
-        Database.dbType = 'postgres';
-        console.log('✅ PostgreSQL (Neon) ready via unified Database adapter\n');
-      } else {
-        console.log('📁 Falling back to JSON file-based database\n');
-        dbConnected = 'json';
-        process.env.DATABASE_TYPE = 'json';
-        Database.dbType = 'json';
-      }
-      return;
-    } catch (error) {
-      console.error('❌ PostgreSQL connection error:', error.message);
-      console.log('📁 Falling back to JSON file-based database\n');
-      dbConnected = 'json';
-      process.env.DATABASE_TYPE = 'json';
-      Database.dbType = 'json';
-      return;
-    }
-  }
-
-  // --- MongoDB (legacy path) ---
-  if (dbType === 'mongodb') {
-    const mongoose = require('mongoose'); // only require mongoose when actually using it
-    try {
-      if (!process.env.MONGODB_URI) {
-        console.log('⚠️  MONGODB_URI not set. Falling back to JSON database.\n');
-        dbConnected = 'json';
-        return;
-      }
-
-      await mongoose.connect(process.env.MONGODB_URI, {
-        useNewUrlParser: true,
-        useUnifiedTopology: true,
-        maxPoolSize: 10,
-        socketTimeoutMS: 45000,
-        serverSelectionTimeoutMS: 15000,
-        retryWrites: true,
-        retryReads: true
-      });
-
-      console.log('✅ MongoDB Connected Successfully!');
-      console.log(`📊 Database: ${mongoose.connection.name}`);
-      console.log(`🔐 Host: ${mongoose.connection.host}\n`);
-
-      try {
-        mongoModels = require('./models/schemas');
-        Database.useMongoModels(mongoModels);
-        console.log('✅ MongoDB Models Initialized Successfully!\n');
-
-        // One-time repair for legacy cart items (MongoDB only)
-        (async () => {
-          try {
-            const { Cart } = mongoModels;
-            const carts = await Cart.find({ 'items.0': { $exists: true } }).lean();
-            let repairedCount = 0;
-
-            for (const cart of carts) {
-              if (!Array.isArray(cart.items)) continue;
-
-              let needsRepair = false;
-              const cleanedItems = cart.items.map(item => {
-                if (!item) return item;
-                const hasBadId = item._id && typeof item._id === 'object' && item._id.toString().length === 24;
-                const hasOurId = typeof item.id === 'string' && item.id.length > 10;
-                if (hasBadId || !hasOurId) needsRepair = true;
-
-                return {
-                  id: item.id || (item._id ? item._id.toString() : `${item.productId || 'item'}_${Date.now()}`),
-                  productId: item.productId,
-                  name: item.name,
-                  image: item.image,
-                  price: item.price,
-                  quantity: item.quantity || 1,
-                  size: item.size,
-                  color: item.color || 'Default',
-                  customization: item.customization,
-                  addedAt: item.addedAt || item.createdAt || new Date()
-                };
-              });
-
-              if (needsRepair) {
-                await Cart.updateOne({ _id: cart._id }, { $set: { items: cleanedItems, updatedAt: new Date() } });
-                repairedCount++;
-              }
-            }
-
-            if (repairedCount > 0) {
-              console.log(`🛠️  Repaired ${repairedCount} cart(s) with legacy item _id data.`);
-            }
-          } catch (repairErr) {
-            console.warn('⚠️  Cart repair step skipped (non-fatal):', repairErr.message);
-          }
-        })();
-      } catch (modelError) {
-        console.error('❌ Error initializing models:', modelError.message);
-        dbConnected = 'json';
-        return;
-      }
-
-      dbConnected = 'mongodb';
-    } catch (error) {
-      console.error('❌ MongoDB Connection Error:', error.message);
-      if (error.message.includes('ECONNREFUSED')) {
-        console.error('⚠️  Check if MongoDB is running on localhost:27017');
-      } else if (error.message.includes('authentication failed')) {
-        console.error('⚠️  Check MONGODB_URI username/password');
-      }
-      console.log('📁 Falling back to JSON file-based database\n');
-      dbConnected = 'json';
-    }
-    return;
-  }
-
-  // Unknown type → JSON
-  console.log('📁 Unknown DATABASE_TYPE, using JSON file-based database\n');
-  dbConnected = 'json';
+  dbConnected = 'postgres';
+  Database.dbType = 'postgres';
+  console.log('✅ PostgreSQL (Neon) ready via unified Database adapter\n');
 };
 
 // ==================== Middleware ====================
@@ -277,31 +152,12 @@ app.get('/api/health', (req, res) => {
 });
 
 app.get('/api/database-status', (req, res) => {
-  if (dbConnected === 'mongodb') {
-    const mongoose = require('mongoose');
-    res.json({
-      success: true,
-      status: 'connected',
-      database: 'MongoDB',
-      host: mongoose.connection.host,
-      name: mongoose.connection.name,
-      readyState: mongoose.connection.readyState
-    });
-  } else if (dbConnected === 'postgres') {
-    res.json({
-      success: true,
-      status: 'connected',
-      database: 'PostgreSQL (Neon)',
-      message: 'Connected via pg Pool + unified Database adapter'
-    });
-  } else {
-    res.json({
-      success: true,
-      status: 'connected',
-      database: 'JSON File-Based',
-      message: 'Using local JSON files for data persistence'
-    });
-  }
+  res.json({
+    success: dbConnected === 'postgres',
+    status: dbConnected === 'postgres' ? 'connected' : 'disconnected',
+    database: 'PostgreSQL (Neon)',
+    message: 'Connected via pg Pool + unified Database adapter',
+  });
 });
 
 // ==================== Import Routes ====================
@@ -321,6 +177,7 @@ const reviewsRoutes = require('./routes/reviewsRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const subscriptionRoutes = require('./routes/subscriptionRoutes');
 const contactRoutes = require('./routes/contactRoutes');
+const categoryRoutes = require('./routes/categoryRoutes');
 
 // Periodic email scheduler (node-cron)
 let cron;
@@ -347,6 +204,7 @@ app.use('/api/reviews', reviewsRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/contact', contactRoutes);
+app.use('/api/categories', categoryRoutes);
 
 // ==================== 404 & Error Handling ====================
 app.use((req, res) => {
@@ -378,12 +236,10 @@ const PORT = process.env.PORT || 5000;
 // Connect to database first, then start server
 connectDatabase().then(() => {
   const server = app.listen(PORT, '0.0.0.0', () => {
-    const dbLabel = dbConnected === 'mongodb' ? 'MongoDB' 
-                  : dbConnected === 'postgres' ? 'PostgreSQL (Neon)' 
-                  : 'JSON Files';
+    const dbLabel = 'PostgreSQL (Neon)';
 
     console.log(`\n╔════════════════════════════════════════════╗`);
-    console.log(`║  AAOMS Backend Server          ║`);
+    console.log(`║  AAOMS CARE Backend Server          ║`);
     console.log(`║  Running on: http://localhost:${PORT}          ║`);
     console.log(`║  Environment: ${process.env.NODE_ENV || 'development'}               ║`);
     console.log(`║  Database: ${dbLabel.padEnd(20)} ║`);
@@ -392,8 +248,9 @@ connectDatabase().then(() => {
     console.log('🔍 Useful Endpoints:');
     console.log('   GET  /api/health');
     console.log('   GET  /api/database-status');
-    console.log('   POST /api/payment/esewa/verify');
-    console.log('   POST /api/payment/khalti/initiate');
+    console.log('   POST /api/payment/razorpay/create-order');
+    console.log('   POST /api/payment/razorpay/verify');
+
     console.log('   GET  /api/payment/methods');
     console.log('   POST /api/subscriptions/subscribe  (public)');
     console.log('   POST /api/subscriptions/send-newsletter  (admin)\n');
@@ -408,7 +265,7 @@ connectDatabase().then(() => {
         // '0 10 * * 0' = 10:00 AM every Sunday
         cron.schedule('0 10 * * 0', async () => {
           try {
-            console.log('🗓️  [CRON] Running weekly AAOMS Club auto-newsletter...');
+            console.log('🗓️  [CRON] Running weekly AAOMS CARE Club auto-newsletter...');
             const Database = require('./models/DatabaseAdapter');
             const subs = (await Database.readAll('subscribers')).filter(s => s.isActive !== false);
             if (!subs.length) {
@@ -432,9 +289,9 @@ connectDatabase().then(() => {
               });
             }
 
-            const from = process.env.EMAIL_FROM || `"AAOMS Club" <${process.env.SMTP_MAIL || process.env.SMTP_USER}>`;
+            const from = process.env.EMAIL_FROM || `"AAOMS CARE Club" <${process.env.SMTP_MAIL || process.env.SMTP_USER}>`;
             const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-            const subject = 'Your Weekly AAOMS Club Update ✨ New Arrivals & Offers Inside';
+            const subject = 'Your Weekly AAOMS CARE Club Update ✨ New Arrivals & Offers Inside';
 
             let sent = 0;
             for (const sub of subs) {
@@ -449,17 +306,17 @@ connectDatabase().then(() => {
                   html: `
                     <div style="font-family:system-ui,Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden">
                       <div style="background:#1a1a1a;color:#fff;padding:24px 20px;text-align:center">
-                        <div style="font-size:20px;letter-spacing:2px;font-weight:700">AAOMS CLUB</div>
+                        <div style="font-size:20px;letter-spacing:2px;font-weight:700">AAOMS CARE CLUB</div>
                       </div>
                       <div style="padding:28px 24px;color:#222;line-height:1.65">
                         <p>Hi Club Member,</p>
                         <p>This week we dropped new pieces inspired by our latest travels — including the signature lightweight travel shirts and the restocked brass accessories.</p>
                         <p style="margin:18px 0"><strong>Current highlight:</strong> 15% off sitewide for Club members this week only. Use code <strong>CLUB15</strong> at checkout.</p>
                         <a href="${frontendUrl}/collection" style="display:inline-block;background:#c9a227;color:#000;padding:11px 22px;border-radius:6px;text-decoration:none;font-weight:600">Browse New Arrivals →</a>
-                        <p style="margin-top:24px;font-size:13px">See you on the next adventure,<br/>Team AAOMS</p>
+                        <p style="margin-top:24px;font-size:13px">See you on the next adventure,<br/>Team AAOMS CARE</p>
                       </div>
                       <div style="background:#f8f8f8;padding:14px 24px;font-size:11px;color:#777;text-align:center">
-                        You are receiving this because you joined the AAOMS Club.<br/>
+                        You are receiving this because you joined the AAOMS CARE Club.<br/>
                         <a href="${unsubscribeLink}" style="color:#999">Unsubscribe</a>
                       </div>
                     </div>
@@ -511,7 +368,11 @@ connectDatabase().then(() => {
   // Graceful shutdown
   const gracefulShutdown = () => {
     console.log('\n📛 Shutting down gracefully...');
-    server.close(() => {
+    server.close(async () => {
+      try {
+        const { closePostgres } = require('./models/postgres');
+        await closePostgres();
+      } catch (_) {}
       console.log('✅ Server closed');
       process.exit(0);
     });

@@ -70,7 +70,7 @@ exports.addToWishlist = async (req, res) => {
 
     if (!wishlist) {
       wishlist = await Database.create('wishlists', {
-        _id: uuidv4(),           // Important for MongoDB
+        _id: uuidv4(),
         userId,
         items: []
       });

@@ -135,7 +135,7 @@ exports.createOrder = async (req, res) => {
         shippingCost,
         logoCharge,
         amount: orderTotal,
-        paymentMethod: paymentMethod || 'esewa',
+        paymentMethod: paymentMethod || 'razorpay',
         notes: notes || '',
         total: orderTotal,
         status: ORDER_STATUS.PENDING,
@@ -145,7 +145,7 @@ exports.createOrder = async (req, res) => {
         updatedAt: new Date().toISOString()
       });
     } catch (createErr) {
-      const isDup = createErr && (createErr.code === 11000 || createErr.code === '23505' || (createErr.detail && createErr.detail.includes('already exists')));
+      const isDup = createErr && (createErr.code === '23505' || (createErr.detail && createErr.detail.includes('already exists')));
       if (isDup) {
         // Handle duplicate orderId gracefully (e.g. retry)
         const existing = await Database.findBy(ORDERS_COLLECTION, 'orderId', orderId);
@@ -484,7 +484,7 @@ exports.downloadInvoice = async (req, res) => {
     doc.pipe(res);
 
     // Header
-    doc.fontSize(24).text('AAOMS', { align: 'center' });
+    doc.fontSize(24).text('AAOMS CARE', { align: 'center' });
     doc.fontSize(12).text('Invoice', { align: 'center' });
     doc.moveDown();
 
@@ -581,7 +581,7 @@ exports.downloadInvoice = async (req, res) => {
     y += 30;
 
     // Footer note
-    doc.fontSize(9).text('Thank you for shopping with AAOMS!', { align: 'center' });
+    doc.fontSize(9).text('Thank you for shopping with AAOMS CARE!', { align: 'center' });
     doc.text('For questions, contact aaoms.official@gmail.com or visit /contact', { align: 'center' });
 
     // Finalize PDF

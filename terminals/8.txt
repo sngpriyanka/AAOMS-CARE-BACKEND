@@ -1,0 +1,9 @@
+---
+pid: 28828
+cwd: "C:\Users\ACER\Desktop\AAOMS - India"
+command: "cd \"C:\\Users\\ACER\\Desktop\\AAOMS - India\\backend\"; node -e \"const D=require('./models/DatabaseAdapter'); console.log('adapter type:', D.getDatabaseType()); const pc=require('./controllers/paymentController'); console.log('payment exports:', Object.keys(pc).length);\""
+started_at: 2026-06-22T18:07:53.396Z
+running_for_ms: 555001   
+---
+adapter type: postgres
+payment exports: 7

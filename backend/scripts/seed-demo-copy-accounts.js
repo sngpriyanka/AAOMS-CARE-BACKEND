@@ -1,15 +1,10 @@
 #!/usr/bin/env node
 /**
- * Seed Demo Accounts Script - Universal Version
- * 
- * Works with ANY database type configured in .env:
- *   - postgres / neon
- *   - mongodb
- *   - json (file-based)
- * 
+ * Seed Demo Accounts Script
+ *
  * Usage:
  *   cd backend
- *   node scripts/seed-demo-accounts.js
+ *   node scripts/seed-demo-copy-accounts.js
  */
 
 require('dotenv').config();
@@ -22,39 +17,22 @@ const Database = require('../models/DatabaseAdapter');
 const USERS_COLLECTION = 'users';
 const ADMINS_COLLECTION = 'admins';
 
-async function connectIfNeeded() {
-  const dbType = (process.env.DATABASE_TYPE || 'json').toLowerCase();
-
-  if (dbType === 'postgres' || dbType === 'postgresql' || dbType === 'neon' || dbType === 'pg') {
-    console.log('🔌 Connecting to PostgreSQL...');
-    const { connectPostgres } = require('../models/postgres');
-    const pool = await connectPostgres();
-    if (!pool) {
-      console.error('❌ Failed to connect to Postgres. Check your DATABASE_URL in .env');
-      process.exit(1);
-    }
-    console.log('✅ PostgreSQL connected for seeding\n');
-    return 'postgres';
+async function connectPostgres() {
+  console.log('🔌 Connecting to PostgreSQL...');
+  const { connectPostgres: connect, closePostgres } = require('../models/postgres');
+  const pool = await connect();
+  if (!pool) {
+    console.error('❌ Failed to connect to Postgres. Check your DATABASE_URL in .env');
+    process.exit(1);
   }
-
-  if (dbType === 'mongodb') {
-    // Optional: support old Mongo path if someone wants it
-    console.log('🔌 Connecting to MongoDB (legacy mode)...');
-    const mongoose = require('mongoose');
-    const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/aaxoms';
-    await mongoose.connect(mongoUri, { useNewUrlParser: true, useUnifiedTopology: true });
-    console.log('✅ MongoDB connected\n');
-    return 'mongodb';
-  }
-
-  console.log('📁 Using JSON file-based database for seeding\n');
-  return 'json';
+  console.log('✅ PostgreSQL connected for seeding\n');
+  return closePostgres;
 }
 
 async function seedDemoAccounts() {
-  console.log('\n🌱 Seeding Demo Accounts (Universal Seeder)...\n');
+  console.log('\n🌱 Seeding Demo Accounts...\n');
 
-  const dbType = await connectIfNeeded();
+  const closePostgres = await connectPostgres();
 
   const demoAccounts = [
     {
@@ -62,22 +40,22 @@ async function seedDemoAccounts() {
       password: 'customer123',
       name: 'John Doe',
       role: 'customer',
-      collection: USERS_COLLECTION
+      collection: USERS_COLLECTION,
     },
     {
       email: 'admin@example.com',
       password: 'admin123',
       name: 'Admin User',
       role: 'admin',
-      collection: ADMINS_COLLECTION
+      collection: ADMINS_COLLECTION,
     },
     {
       email: 'super@example.com',
       password: 'super123',
       name: 'Super Admin',
       role: 'super_admin',
-      collection: ADMINS_COLLECTION
-    }
+      collection: ADMINS_COLLECTION,
+    },
   ];
 
   for (const account of demoAccounts) {
@@ -101,10 +79,9 @@ async function seedDemoAccounts() {
         role: account.role,
         isActive: true,
         createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        updatedAt: new Date().toISOString(),
       };
 
-      // Add some extra fields for customer experience
       if (account.collection === USERS_COLLECTION) {
         record.phone = '9876543210';
         record.address = '123 Demo Street';
@@ -120,7 +97,6 @@ async function seedDemoAccounts() {
       console.log(`   📧 Email: ${account.email}`);
       console.log(`   🔐 Password: ${account.password}`);
       console.log(`   👤 Role: ${account.role}\n`);
-
     } catch (error) {
       console.error(`❌ Failed to create ${account.email}:`, error.message);
     }
@@ -132,14 +108,7 @@ async function seedDemoAccounts() {
   console.log('  👨‍💼 Admin        → admin@example.com / admin123');
   console.log('  👑 Super Admin  → super@example.com / super123\n');
 
-  console.log('📌 Make sure your backend is running with the correct DATABASE_TYPE in .env\n');
-
-  // Clean up connections if needed
-  if (dbType === 'mongodb') {
-    const mongoose = require('mongoose');
-    await mongoose.connection.close().catch(() => {});
-  }
-  // Postgres pool will be closed by process exit, or we can leave it.
+  await closePostgres().catch(() => {});
 }
 
 seedDemoAccounts().catch((error) => {

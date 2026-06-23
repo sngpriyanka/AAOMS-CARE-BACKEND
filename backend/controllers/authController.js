@@ -2,7 +2,8 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const Database = require('../models/DatabaseAdapter');
-const { validateEmail, validatePassword } = require('../utils/validators');
+const { validateEmail, validatePassword, validatePhoneOrEmpty, INDIAN_MOBILE_ERROR } = require('../utils/validators');
+const { toPhone10, formatIndianPhone } = require('../utils/phoneUtils');
 const { notify } = require('./notificationController');
 const { sendSms } = require('../utils/sparrowSms');
 const { sendSignupOtpEmail } = require('../utils/emailService');
@@ -115,12 +116,21 @@ exports.signup = async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 12);
     const userId = uuidv4();
 
+    let normalizedPhone = '';
+    if (phone) {
+      const phoneCheck = validatePhoneOrEmpty(phone);
+      if (!phoneCheck.valid) {
+        return res.status(400).json({ success: false, message: phoneCheck.message || INDIAN_MOBILE_ERROR });
+      }
+      normalizedPhone = phoneCheck.normalized ? formatIndianPhone(phoneCheck.normalized) : '';
+    }
+
     const newUser = await Database.create(USERS_COLLECTION, {
       id: userId,
       email: email.toLowerCase(),
       password: hashedPassword,
       name: name.trim(),
-      phone: phone || '',
+      phone: normalizedPhone,
       role: 'customer',
       isActive: true,
       createdAt: new Date().toISOString(),
@@ -226,9 +236,9 @@ exports.forgotPassword = async (req, res) => {
 
 // Inside forgotPassword function - Replace the transporter.sendMail block
 await transporter.sendMail({
-  from: `"AAOMS Support" <${process.env.SMTP_MAIL}>`,
+  from: `"AAOMS CARE Support" <${process.env.SMTP_MAIL}>`,
   to: email,
-  subject: 'Reset Your AAOMS Password',
+  subject: 'Reset Your AAOMS CARE Password',
   html: `
     <!DOCTYPE html>
     <html>
@@ -254,7 +264,7 @@ await transporter.sendMail({
     <body>
       <div class="container">
         <div class="header">
-          <div class="logo">AAOMS</div>
+          <div class="logo">AAOMS CARE</div>
         </div>
         
         <h2 style="text-align:center; color:#333;">Reset Your Password</h2>
@@ -274,7 +284,7 @@ await transporter.sendMail({
 
         <div class="footer">
           <p>If you didn't request this, please ignore this email.</p>
-          <p>© 2026 AAOMS - All Rights Reserved</p>
+          <p>© 2026 AAOMS CARE - All Rights Reserved</p>
         </div>
       </div>
     </body>
@@ -310,7 +320,7 @@ exports.login = async (req, res) => {
     const normalizedEmail = email.toLowerCase();
     const tokenExpiry = getLoginTokenExpiry(!!rememberMe);
 
-    // === Check Admin Collection (via unified adapter - works for JSON, Mongo, Postgres) ===
+    // === Check Admin Collection (via unified Postgres adapter) ===
     let admin = await Database.findBy(ADMINS_COLLECTION, 'email', normalizedEmail);
     if (admin) {
       const passwordMatch = await comparePassword(password, admin.password);
@@ -648,18 +658,19 @@ exports.sendOtp = async (req, res) => {
 
     // Profile flow: phone OTP via SMS (unchanged)
     if (purpose === 'profile') {
-      if (!phone || !/^\d{10}$/.test(phone)) {
-        return res.status(400).json({ success: false, message: 'Valid 10-digit phone number is required' });
+      const phone10 = toPhone10(phone);
+      if (!phone10 || !validatePhoneOrEmpty(phone10).valid) {
+        return res.status(400).json({ success: false, message: INDIAN_MOBILE_ERROR });
       }
 
-      const storeKey = getOtpStoreKey('phone', phone);
+      const storeKey = getOtpStoreKey('phone', phone10);
       otpStore.set(storeKey, { code: hashedCode, expiresAt, purpose });
 
-      console.log(`\n🔐 [OTP DEBUG - FOR TESTING ONLY] Phone: ${phone} | Code: ${code} | Purpose: ${purpose} | Expires: ${expiresAt.toISOString()}\n`);
+      console.log(`\n🔐 [OTP DEBUG - FOR TESTING ONLY] Phone: ${phone10} | Code: ${code} | Purpose: ${purpose} | Expires: ${expiresAt.toISOString()}\n`);
 
-      const message = `Your AAOMS verification code is ${code}. Valid for 5 minutes. Do not share this code with anyone.`;
-      await sendSms(phone, message);
-      console.log(`[Sparrow SMS] OTP send attempted to ${phone}`);
+      const message = `Your AAOMS CARE verification code is ${code}. Valid for 5 minutes. Do not share this code with anyone.`;
+      await sendSms(phone10, message);
+      console.log(`[Sparrow SMS] OTP send attempted to ${phone10}`);
 
       return res.json({
         success: true,
@@ -695,10 +706,11 @@ exports.verifyOtp = async (req, res) => {
       }
       storeKey = getOtpStoreKey('email', email.toLowerCase().trim());
     } else if (purpose === 'profile') {
-      if (!phone) {
-        return res.status(400).json({ success: false, message: 'Phone number is required' });
+      const phone10 = toPhone10(phone);
+      if (!phone10 || !validatePhoneOrEmpty(phone10).valid) {
+        return res.status(400).json({ success: false, message: INDIAN_MOBILE_ERROR });
       }
-      storeKey = getOtpStoreKey('phone', phone);
+      storeKey = getOtpStoreKey('phone', phone10);
     } else {
       return res.status(400).json({ success: false, message: 'Invalid OTP purpose' });
     }
@@ -746,9 +758,10 @@ exports.verifyOtp = async (req, res) => {
     }
 
     if (purpose === 'profile') {
+      const phone10 = toPhone10(phone);
       phoneVerificationToken = jwt.sign(
         {
-          phone,
+          phone: phone10,
           purpose: 'phone-profile',
           verifiedAt: Date.now()
         },
@@ -759,7 +772,7 @@ exports.verifyOtp = async (req, res) => {
       return res.json({
         success: true,
         message: 'Phone number verified successfully via OTP.',
-        phone,
+        phone: phone10,
         phoneVerificationToken
       });
     }

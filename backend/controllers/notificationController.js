@@ -280,9 +280,9 @@ exports.notify = async ({ userId = null, type = 'system', title, message, link =
 
           const adminEmail = process.env.ADMIN_EMAIL || process.env.SMTP_USER;
           await transporter.sendMail({
-            from: process.env.EMAIL_FROM || `"AAOMS" <${process.env.SMTP_USER}>`,
+            from: process.env.EMAIL_FROM || `"AAOMS CARE" <${process.env.SMTP_USER}>`,
             to: adminEmail,
-            subject: `[AAOMS] ${title}`,
+            subject: `[AAOMS CARE] ${title}`,
             text: message + (link ? `\n\nLink: ${process.env.FRONTEND_URL || ''}${link}` : ''),
             html: `<p>${message}</p>${link ? `<p><a href="${process.env.FRONTEND_URL || ''}${link}">View in panel</a></p>` : ''}`
           }).catch(() => {}); // never break main flow

@@ -2,6 +2,8 @@ const Database = require('../models/DatabaseAdapter');
 const { v4: uuidv4 } = require('uuid');
 const { sendEmail } = require('../utils/emailService');
 const { notify } = require('./notificationController');
+const { validatePhoneOrEmpty, INDIAN_MOBILE_ERROR } = require('../utils/validators');
+const { toPhone10 } = require('../utils/phoneUtils');
 
 const COLLECTION = 'contactMessages';
 
@@ -26,13 +28,20 @@ exports.submitContactMessage = async (req, res) => {
       });
     }
 
+    if (phone) {
+      const phoneCheck = validatePhoneOrEmpty(phone);
+      if (!phoneCheck.valid) {
+        return res.status(400).json({ success: false, message: phoneCheck.message || INDIAN_MOBILE_ERROR });
+      }
+    }
+
     const id = uuidv4();
     const contactData = {
       id,
       _id: id,
       name: String(name).trim(),
       email: String(email).trim().toLowerCase(),
-      phone: phone ? String(phone).trim() : '',
+      phone: phone ? toPhone10(phone) : '',
       subject: subject ? String(subject).trim() : 'General',
       message: String(message).trim(),
       orderNumber: orderNumber ? String(orderNumber).trim() : '',
@@ -175,7 +184,7 @@ exports.replyToMessage = async (req, res) => {
     const originalSubject = msg.subject || 'Your inquiry';
     const originalMessage = msg.message || '';
 
-    const emailSubject = `Re: ${originalSubject} - AAOMS Support`;
+    const emailSubject = `Re: ${originalSubject} - AAOMS CARE Support`;
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
 
     const html = `
@@ -200,12 +209,12 @@ exports.replyToMessage = async (req, res) => {
 <body>
   <div class="container">
     <div class="header">
-      <div class="logo">AAOMS</div>
+      <div class="logo">AAOMS CARE</div>
       <div style="font-size:10px;opacity:0.7;margin-top:3px;letter-spacing:1.5px;">CUSTOMER SUPPORT</div>
     </div>
     <div class="content">
       <p class="greeting">Hi ${customerName},</p>
-      <p>Thank you for reaching out to AAOMS. Here is our response to your message:</p>
+      <p>Thank you for reaching out to AAOMS CARE. Here is our response to your message:</p>
 
       <div class="original">
         <strong>Your message (${originalSubject}):</strong><br>
@@ -222,8 +231,8 @@ exports.replyToMessage = async (req, res) => {
       <div class="meta">This reply was sent on ${new Date(now).toLocaleString()}.</div>
     </div>
     <div class="footer">
-      Thank you for choosing AAOMS.<br>
-      © ${new Date().getFullYear()} AAOMS — Worldwide travel-inspired fashion &amp; accessories since 2019.<br>
+      Thank you for choosing AAOMS CARE.<br>
+      © ${new Date().getFullYear()} AAOMS CARE — Trusted Healthcare Solutions Dedicated to Better Living.<br>
       <a href="${frontendUrl}">aaoms.com</a>
     </div>
   </div>
@@ -232,7 +241,7 @@ exports.replyToMessage = async (req, res) => {
 
     const text = `Hi ${customerName},
 
-Thank you for contacting AAOMS.
+Thank you for contacting AAOMS CARE.
 
 Your original message (${originalSubject}):
 ${originalMessage}
@@ -243,7 +252,7 @@ ${replyText}
 If you need more help, reply to this email or visit ${frontendUrl}/contact
 
 Best regards,
-AAOMS Support Team`;
+AAOMS CARE Support Team`;
 
     const emailResult = await sendEmail({
       to: customerEmail,

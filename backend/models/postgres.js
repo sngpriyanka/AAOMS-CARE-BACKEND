@@ -13,7 +13,6 @@ const connectPostgres = async () => {
 
     if (!connectionString) {
       console.error('❌ DATABASE_URL not set in .env');
-      process.env.DATABASE_TYPE = 'json';
       return null;
     }
 
@@ -46,7 +45,6 @@ const connectPostgres = async () => {
     return pool;
   } catch (error) {
     console.error('❌ PostgreSQL Connection Failed:', error.message);
-    process.env.DATABASE_TYPE = 'json';
     if (pool) await pool.end().catch(() => {});
     pool = null;
     return null;

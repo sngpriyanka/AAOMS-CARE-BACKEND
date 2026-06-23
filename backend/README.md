@@ -1,6 +1,6 @@
 🚀 Bombay Trooper - Backend Server
 
-This is the backend server for the Bombay Trooper E-commerce platform. It's built with Express.js and uses JSON files for data storage (can be replaced with MongoDB or any other database).
+This is the backend server for the AAOMS E-commerce platform. It's built with Express.js and uses PostgreSQL (Neon) for data storage.
 
 ## Installation
 
@@ -67,18 +67,13 @@ backend/
 │   ├── cartRoutes.js          # Cart endpoints
 │   ├── orderRoutes.js         # Order endpoints
 │   └── userRoutes.js          # User endpoints
-├── models/               # Data models
-│   └── Database.js            # JSON database layer
+├── models/               # Data layer
+│   ├── DatabaseAdapter.js     # Unified PostgreSQL adapter
+│   ├── postgres.js            # Neon/pg connection pool
+│   └── migrations/            # Table initialization
 ├── middleware/           # Custom middleware
-│   └── authMiddleware.js      # JWT verification
+│   └── roleMiddleware.js      # JWT + role-based access
 ├── utils/                # Utility functions
-│   ├── constants.js           # App constants
-│   └── validators.js          # Input validators
-├── data/                 # JSON data storage
-│   ├── users.json
-│   ├── products.json
-│   ├── orders.json
-│   └── carts.json
 ├── server.js             # Main server file
 ├── .env                  # Environment variables
 └── package.json          # Dependencies
@@ -241,29 +236,20 @@ curl "http://localhost:5000/api/products?category=t-shirts&minPrice=500&maxPrice
 
 ## 🔄 Data Storage
 
-The application uses a **unified Database adapter** (`models/DatabaseAdapter.js`).
+The application uses a **unified Database adapter** (`models/DatabaseAdapter.js`) backed by **PostgreSQL (Neon)**.
 
-Supported backends (set via `DATABASE_TYPE` in `.env`):
-
-| Type       | Value          | When to use                     |
-|------------|----------------|---------------------------------|
-| JSON       | `json`         | Local development, quick tests  |
-| MongoDB    | `mongodb`      | Existing MongoDB Atlas setups   |
-| **PostgreSQL / Neon** | `postgres` | **Recommended for production** |
-
-### Connecting to Neon PostgreSQL (recommended)
+### Connecting to Neon PostgreSQL
 
 1. Create a free project at [Neon](https://neon.tech)
 2. Copy the connection string (it ends with `?sslmode=require`)
 3. In `backend/.env`:
    ```env
-   DATABASE_TYPE=postgres
    DATABASE_URL=postgresql://user:pass@ep-xxx.region.aws.neon.tech/neondb?sslmode=require
    ```
 4. Run `npm install` (the `pg` driver is already listed)
 5. Start the server — tables are created automatically on first connection.
 
-All existing controllers continue to work unchanged thanks to the adapter layer.
+All controllers use the adapter layer for database operations.
 
 ---
 
@@ -384,9 +370,9 @@ Mac/Linux: lsof -i :5000
 - Add correct origin in CORS middleware
 
 ### Database Not Saving
-- Check `/data` folder exists
-- Verify write permissions
-- Check disk space
+- Verify `DATABASE_URL` is set correctly in `.env`
+- Confirm the Neon PostgreSQL instance is reachable
+- Check server logs for connection or migration errors
 
 ---
 
@@ -397,7 +383,7 @@ PORT=5000                          # Server port
 NODE_ENV=development               # Environment
 JWT_SECRET=your_secret_key        # JWT signing key
 FRONTEND_URL=http://localhost:3000 # Frontend URL
-DATABASE_TYPE=postgres             # json | mongodb | postgres (Neon)
+DATABASE_URL=postgresql://...      # Neon PostgreSQL connection string
 ```
 
 ---

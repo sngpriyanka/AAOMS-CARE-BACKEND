@@ -25,17 +25,6 @@ const protect = (req, res, next) => {
   }
 };
 
-// Check if user is customer
-const customerOnly = (req, res, next) => {
-  if (req.user.role !== 'customer') {
-    return res.status(403).json({
-      success: false,
-      message: 'This action is only for customers'
-    });
-  }
-  next();
-};
-
 // Check if user is admin or super_admin
 const adminOnly = (req, res, next) => {
   if (req.user.role !== 'admin' && req.user.role !== 'super_admin') {
@@ -73,8 +62,7 @@ const hasRole = (...allowedRoles) => {
 
 module.exports = {
   protect,
-  customerOnly,
   adminOnly,
   superAdminOnly,
-  hasRole
+  hasRole,
 };

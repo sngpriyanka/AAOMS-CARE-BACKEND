@@ -1,0 +1,15 @@
+---
+pid: 17832
+cwd: "C:\Users\ACER\Desktop\AAOMS - India"
+command: "cd \"C:\\Users\\ACER\\Desktop\\AAOMS - India\\backend\"; node -e \"const pc=require('./controllers/paymentController'); console.log(Object.keys(pc)); pc.getPaymentMethods({}, {json:d=>console.log('methods:', d.data.map(m=>m.id))});\""
+started_at: 2026-06-22T18:16:45.496Z
+running_for_ms: 19999    
+---
+[
+  'getPaymentMethods',
+  'verifyRazorpayPayment',
+  'initiateRazorpayPayment',
+  'getAdminRevenueSummary',
+  'getAdminPayments'
+]
+methods: [ 'razorpay' ]

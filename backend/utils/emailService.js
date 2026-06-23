@@ -63,7 +63,7 @@ function getDefaultFromAddress() {
   const { user } = getSmtpCredentials();
   return process.env.EMAIL_FROM
     || process.env.SUPPORT_EMAIL
-    || (user ? `"AAOMS Support" <${user}>` : '"AAOMS Support" <orders@aaoms.com>');
+    || (user ? `"AAOMS CARE Support" <${user}>` : '"AAOMS CARE Support" <orders@aaoms.com>');
 }
 
 function getDefaultReplyToAddress() {
@@ -90,7 +90,7 @@ async function sendEmail({ to, subject, html, text, replyTo }) {
     const mailOptions = {
       from,
       to: String(to).trim(),
-      subject: String(subject || 'AAOMS Update'),
+      subject: String(subject || 'AAOMS CARE Update'),
       text: text || '',
       html: html || ''
     };
@@ -131,7 +131,7 @@ function getStatusMessage(status, orderNum) {
     case 'shipped':
       return 'Exciting news — your order has been shipped! It is now in transit and on its way to you.';
     case 'delivered':
-      return 'Your order has been delivered. Thank you for shopping with AAOMS! We hope you enjoy your purchase.';
+      return 'Your order has been delivered. Thank you for shopping with AAOMS CARE! We hope you enjoy your purchase.';
     case 'cancelled':
       return 'Your order has been cancelled. Any payment made will be processed for refund according to our policy. Please contact support if you need assistance.';
     default:
@@ -273,7 +273,7 @@ async function sendOrderStatusEmail(order, explicitStatus = null) {
   }).join('');
   const extra = items.length > 4 ? `<li style="color:#666;font-size:12px;">+ ${items.length - 4} more item(s)</li>` : '';
 
-  const subject = `AAOMS Order #${orderNum} Status: ${statusLabel}`;
+  const subject = `AAOMS CARE Order #${orderNum} Status: ${statusLabel}`;
 
   const html = `
 <!DOCTYPE html>
@@ -305,7 +305,7 @@ async function sendOrderStatusEmail(order, explicitStatus = null) {
 <body>
   <div class="container">
     <div class="header">
-      <div class="logo">AAOMS</div>
+      <div class="logo">AAOMS CARE</div>
       <div style="font-size:10px;opacity:0.7;margin-top:3px;letter-spacing:1.5px;">ORDER UPDATE</div>
     </div>
     <div class="content">
@@ -338,8 +338,8 @@ async function sendOrderStatusEmail(order, explicitStatus = null) {
       <p class="meta">If this update seems unexpected, or you need help, please reply to this email or reach out via our support channels.</p>
     </div>
     <div class="footer">
-      Thank you for choosing AAOMS.<br>
-      © ${new Date().getFullYear()} AAOMS — Worldwide travel-inspired fashion &amp; accessories since 2019.<br>
+      Thank you for choosing AAOMS CARE.<br>
+      © ${new Date().getFullYear()} AAOMS CARE — Trusted Healthcare Solutions Dedicated to Better Living.<br>
       <a href="${frontendUrl}">aaoms.com</a>
     </div>
   </div>
@@ -348,7 +348,7 @@ async function sendOrderStatusEmail(order, explicitStatus = null) {
 
   const text = `Hello ${customerName},
 
-Your AAOMS order #${orderNum} status is now: ${statusLabel}.
+Your AAOMS CARE order #${orderNum} status is now: ${statusLabel}.
 
 ${message}
 
@@ -357,7 +357,7 @@ ${order.trackingNumber ? `Tracking: ${order.trackingNumber}\n` : ''}
 View order: ${orderLink}
 Track: ${trackLink}
 
-Thank you for shopping with AAOMS!`;
+Thank you for shopping with AAOMS CARE!`;
 
   return sendEmail({ to, subject, html, text });
 }
@@ -413,11 +413,11 @@ async function sendAdminNewOrderEmail(order) {
 <body>
   <div class="container">
     <div class="header">
-      <div class="logo">AAOMS</div>
+      <div class="logo">AAOMS CARE</div>
       <div style="font-size:10px;opacity:0.7;margin-top:3px;letter-spacing:1.5px;">ADMIN ALERT</div>
     </div>
     <div class="content">
-      <p style="font-size:15px;margin:0 0 8px;">A new order has been placed on AAOMS.</p>
+      <p style="font-size:15px;margin:0 0 8px;">A new order has been placed on AAOMS CARE.</p>
       <span class="alert">NEW ORDER</span>
 
       <div class="details">
@@ -452,8 +452,8 @@ async function sendAdminNewOrderEmail(order) {
       </div>
     </div>
     <div class="footer">
-      This is an automated admin notification from AAOMS.<br>
-      © ${new Date().getFullYear()} AAOMS — All Rights Reserved
+      This is an automated admin notification from AAOMS CARE.<br>
+      © ${new Date().getFullYear()} AAOMS CARE — All Rights Reserved
     </div>
   </div>
 </body>
@@ -479,7 +479,7 @@ View orders: ${adminOrderLink}`;
 }
 
 async function sendSignupOtpEmail(email, code) {
-  const subject = 'Your AAOMS Verification Code';
+  const subject = 'Your AAOMS CARE Verification Code';
   const html = `
 <!DOCTYPE html>
 <html lang="en">
@@ -498,7 +498,7 @@ async function sendSignupOtpEmail(email, code) {
 <body>
   <div class="container">
     <div class="header">
-      <div class="logo">AAOMS</div>
+      <div class="logo">AAOMS CARE</div>
       <div style="font-size:10px;opacity:0.7;margin-top:3px;letter-spacing:1.5px;">EMAIL VERIFICATION</div>
     </div>
     <div class="content">
@@ -508,20 +508,20 @@ async function sendSignupOtpEmail(email, code) {
     </div>
     <div class="footer">
       If you didn't request this code, you can safely ignore this email.<br>
-      © ${new Date().getFullYear()} AAOMS — All Rights Reserved
+      © ${new Date().getFullYear()} AAOMS CARE — All Rights Reserved
     </div>
   </div>
 </body>
 </html>`;
 
-  const text = `Your AAOMS verification code is ${code}. Valid for 5 minutes. Do not share this code with anyone.`;
+  const text = `Your AAOMS CARE verification code is ${code}. Valid for 5 minutes. Do not share this code with anyone.`;
 
   return sendEmail({ to: email, subject, html, text });
 }
 
 async function sendWelcomeEmail(toEmail) {
   const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-  const subject = 'Welcome to the AAOMS Club ✨';
+  const subject = 'Welcome to the AAOMS CARE Club ✨';
 
   const html = `
     <!DOCTYPE html>
@@ -540,31 +540,31 @@ async function sendWelcomeEmail(toEmail) {
     <body>
       <div class="container">
         <div class="header">
-          <div class="logo">AAOMS</div>
+          <div class="logo">AAOMS CARE</div>
           <div style="margin-top:6px;opacity:0.8;font-size:12px;letter-spacing:1.5px;">THE CLUB</div>
         </div>
         <div class="content">
-          <h2 style="margin:0 0 12px;font-size:20px;color:#111;">Welcome to the AAOMS Club!</h2>
+          <h2 style="margin:0 0 12px;font-size:20px;color:#111;">Welcome to the AAOMS CARE Club!</h2>
           <p>Thank you for subscribing. You'll be the first to know about new launches, exclusive drops, and special offers.</p>
           <p style="margin:20px 0 0;">Explore our latest collections:</p>
           <a href="${frontendUrl}/collection" class="btn">SHOP NOW</a>
         </div>
         <div class="footer">
           You can unsubscribe anytime from the link in future emails.<br/>
-          © ${new Date().getFullYear()} AAOMS. All rights reserved.
+          © ${new Date().getFullYear()} AAOMS CARE. All rights reserved.
         </div>
       </div>
     </body>
     </html>
   `;
 
-  const text = `Welcome to the AAOMS Club!
+  const text = `Welcome to the AAOMS CARE Club!
 
 Thank you for subscribing. You'll be the first to know about new launches, exclusive drops, and special offers.
 
 Shop now: ${frontendUrl}/collection
 
-© ${new Date().getFullYear()} AAOMS. All rights reserved.`;
+© ${new Date().getFullYear()} AAOMS CARE. All rights reserved.`;
 
   return sendEmail({ to: toEmail, subject, html, text });
 }

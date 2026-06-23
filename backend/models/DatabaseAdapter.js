@@ -1,8 +1,5 @@
-const fs = require('fs');
-const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 
-// Lazy import for pg (only when DATABASE_TYPE=postgres)
 let pgPool = null;
 const getPgPool = () => {
   if (!pgPool) {
@@ -15,286 +12,6 @@ const getPgPool = () => {
   }
   return pgPool;
 };
-
-const DATA_DIR = path.join(__dirname, '../data');
-
-// Ensure data directory exists for JSON fallback
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
-
-// ==================== JSON DATABASE CLASS ====================
-class JSONDatabase {
-  static getFilePath(collection) {
-    return path.join(DATA_DIR, `${collection}.json`);
-  }
-
-  static readData(collection) {
-    const filePath = this.getFilePath(collection);
-    try {
-      if (fs.existsSync(filePath)) {
-        const data = fs.readFileSync(filePath, 'utf-8');
-        return JSON.parse(data);
-      }
-      return [];
-    } catch (error) {
-      console.error(`Error reading ${collection}:`, error);
-      return [];
-    }
-  }
-
-  static writeData(collection, data) {
-    const filePath = this.getFilePath(collection);
-    try {
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
-      return true;
-    } catch (error) {
-      console.error(`Error writing ${collection}:`, error);
-      return false;
-    }
-  }
-
-  /**
-   * Light normalization for JSON side (ensures consistent `id` presence).
-   * JSON side already uses plain objects, but this centralizes behavior.
-   */
-  static _normalize(item) {
-    if (!item) return item;
-    if (item._id && !item.id) {
-      item.id = String(item._id);
-    }
-    return item;
-  }
-
-  static _normalizeMany(items) {
-    if (!Array.isArray(items)) return [];
-    return items.map(i => this._normalize(i));
-  }
-
-  static create(collection, item) {
-    const data = this.readData(collection);
-    const providedId = item.id || item._id;
-    const newId = providedId || uuidv4();
-    const newItem = {
-      ...item,
-      id: newId,
-      _id: newId,
-      createdAt: item.createdAt || new Date().toISOString()
-    };
-    data.push(newItem);
-    this.writeData(collection, data);
-    return this._normalize(newItem);
-  }
-
-  static read(collection, id) {
-    const data = this.readData(collection);
-    const found = data.find(item => item.id === id);
-    return this._normalize(found);
-  }
-
-  static readAll(collection) {
-    return this._normalizeMany(this.readData(collection));
-  }
-
-  static update(collection, id, updates) {
-    const data = this.readData(collection);
-    const index = data.findIndex(item => item.id === id);
-    if (index === -1) return null;
-    
-    data[index] = { ...data[index], ...updates, updatedAt: new Date().toISOString() };
-    this.writeData(collection, data);
-    return this._normalize(data[index]);
-  }
-
-  static delete(collection, id) {
-    const data = this.readData(collection);
-    const filtered = data.filter(item => item.id !== id);
-    this.writeData(collection, filtered);
-    return true;
-  }
-
-  static findBy(collection, field, value) {
-    const data = this.readData(collection);
-    const found = data.find(item => item[field] === value);
-    return this._normalize(found);
-  }
-
-  static filterBy(collection, field, value) {
-    const data = this.readData(collection);
-    return this._normalizeMany(data.filter(item => item[field] === value));
-  }
-}
-
-// ==================== MONGODB DATABASE CLASS ====================
-class MongoDBDatabase {
-  static models = null;
-
-  static setModels(models) {
-    this.models = models;
-  }
-
-  /**
-   * Central normalization helper.
-   * Converts Mongoose docs (or plain objects) to safe plain objects
-   * and ensures a string `id` field derived from `_id`.
-   * This is the single place where id/_id normalization happens for Mongo.
-   */
-  static _normalize(doc) {
-    if (!doc) return doc;
-
-    // Convert Mongoose document to plain object if it has toObject()
-    let plain;
-    if (typeof doc.toObject === 'function') {
-      plain = doc.toObject({ virtuals: false, getters: false });
-    } else {
-      plain = { ...doc };
-    }
-
-    if (plain._id != null) {
-      plain.id = plain._id.toString();
-    }
-
-    return plain;
-  }
-
-  /**
-   * Normalize an array of documents.
-   */
-  static _normalizeMany(docs) {
-    if (!Array.isArray(docs)) return [];
-    return docs.map(d => this._normalize(d));
-  }
-
-  static async create(collection, item) {
-    try {
-      if (!this.models) throw new Error('Models not initialized');
-      const Model = this.models[this.getModelName(collection)];
-
-      // If caller passed 'id', map it to Mongo _id (supports our string UUID pattern)
-      const payload = { ...item };
-      if (payload.id && !payload._id) {
-        payload._id = payload.id;
-      }
-
-      const doc = new Model(payload);
-      const saved = await doc.save();
-
-      // Return a normalized plain object (never a live Mongoose doc)
-      return this._normalize(saved);
-    } catch (error) {
-      console.error(`Error creating document in ${collection}:`, error);
-      throw error;
-    }
-  }
-
-  static async read(collection, id) {
-    try {
-      if (!this.models) throw new Error('Models not initialized');
-      const Model = this.models[this.getModelName(collection)];
-      const doc = await Model.findOne({ _id: id }).lean();
-      return this._normalize(doc);   // single place for id normalization
-    } catch (error) {
-      console.error(`Error reading from ${collection}:`, error);
-      return null;
-    }
-  }
-
-  static async readAll(collection) {
-    try {
-      if (!this.models) throw new Error('Models not initialized');
-      const Model = this.models[this.getModelName(collection)];
-      const docs = await Model.find().lean();
-      return this._normalizeMany(docs);   // centralized normalization
-    } catch (error) {
-      console.error(`Error reading all from ${collection}:`, error);
-      return [];
-    }
-  }
-
-  static async update(collection, id, updates) {
-    try {
-      if (!this.models) throw new Error('Models not initialized');
-      const Model = this.models[this.getModelName(collection)];
-      const doc = await Model.findOneAndUpdate(
-        { _id: id },
-        { ...updates, updatedAt: new Date() },
-        { new: true }
-      ).lean();
-      return this._normalize(doc);   // centralized + safe
-    } catch (error) {
-      console.error(`Error updating ${collection} (id=${id}):`, error.message || error);
-      // Log a short preview of bad data for carts (helps debug item casting issues)
-      if (collection === 'carts' && updates?.items) {
-        try {
-          const bad = updates.items.find(i => i && typeof i.id === 'string' && i.id.length > 20);
-          if (bad) console.error('  → Problematic cart item sample:', JSON.stringify(bad));
-        } catch (_) {}
-      }
-      return null;
-    }
-  }
-
-  static async delete(collection, id) {
-    try {
-      if (!this.models) throw new Error('Models not initialized');
-      const Model = this.models[this.getModelName(collection)];
-      // Query by _id field directly instead of findByIdAndDelete to handle string IDs
-      await Model.findOneAndDelete({ _id: id });
-      return true;
-    } catch (error) {
-      console.error(`Error deleting from ${collection}:`, error);
-      return false;
-    }
-  }
-
-  static async findBy(collection, field, value) {
-    try {
-      if (!this.models) throw new Error('Models not initialized');
-      const Model = this.models[this.getModelName(collection)];
-      const doc = await Model.findOne({ [field]: value }).lean();
-      return this._normalize(doc);
-    } catch (error) {
-      console.error(`Error finding in ${collection}:`, error);
-      return null;
-    }
-  }
-
-  static async filterBy(collection, field, value) {
-    try {
-      if (!this.models) throw new Error('Models not initialized');
-      const Model = this.models[this.getModelName(collection)];
-      const docs = await Model.find({ [field]: value }).lean();
-      return this._normalizeMany(docs);
-    } catch (error) {
-      console.error(`Error filtering ${collection}:`, error);
-      return [];
-    }
-  }
-
-  static getModelName(collection) {
-    // Convert collection name to model name
-    // users -> User, products -> Product, addresses -> Address, wishlists -> Wishlist, etc.
-    const singularMap = {
-      users: 'User',
-      products: 'Product',
-      orders: 'Order',
-      carts: 'Cart',
-      addresses: 'Address',
-      wishlists: 'Wishlist',
-      payments: 'Payment',
-      pendingPayments: 'PendingPayment',
-      instagramFeeds: 'InstagramFeed',
-      banners: 'Banner',
-      testimonials: 'Testimonial',
-      reviews: 'Review',
-      notifications: 'Notification',
-      subscribers: 'Subscriber',
-      contactMessages: 'ContactMessage'
-    };
-    
-    return singularMap[collection] || (collection.charAt(0).toUpperCase() + collection.slice(1, -1));
-  }
-}
 
 // ==================== POSTGRES / NEON DATABASE CLASS ====================
 class PostgresDatabase {
@@ -393,6 +110,9 @@ class PostgresDatabase {
     aliasAndStrip('product_information', 'productInformation');
     aliasAndStrip('replied_at', 'repliedAt');
     aliasAndStrip('reset_token', 'resetToken');
+    aliasAndStrip('first_name', 'firstName');
+    aliasAndStrip('middle_name', 'middleName');
+    aliasAndStrip('last_name', 'lastName');
 
     // Coerce Postgres NUMERIC/DECIMAL (returned as strings) and other numeric fields to JS Number.
     // This prevents "X.toFixed is not a function" and similar when data comes from Postgres.
@@ -494,6 +214,9 @@ class PostgresDatabase {
       if (key === 'productInformation') col = 'product_information';
       if (key === 'repliedAt') col = 'replied_at';
       if (key === 'resetToken') col = 'reset_token';
+      if (key === 'firstName') col = 'first_name';
+      if (key === 'middleName') col = 'middle_name';
+      if (key === 'lastName') col = 'last_name';
 
       // Skip internal _id if we have id
       if (col === '_id' && payload.id) continue;
@@ -692,6 +415,9 @@ class PostgresDatabase {
       if (key === 'productInformation') col = 'product_information';
       if (key === 'repliedAt') col = 'replied_at';
       if (key === 'resetToken') col = 'reset_token';
+      if (key === 'firstName') col = 'first_name';
+      if (key === 'middleName') col = 'middle_name';
+      if (key === 'lastName') col = 'last_name';
 
       if (col === '_id' || col === 'id' || col === 'user_id') continue; // never update PK or owner
 
@@ -819,116 +545,47 @@ class PostgresDatabase {
   }
 }
 
-// ==================== UNIFIED DATABASE CLASS ====================
+// ==================== UNIFIED DATABASE CLASS (PostgreSQL only) ====================
 class Database {
-  static dbType = process.env.DATABASE_TYPE || 'json';
-  static jsonDB = JSONDatabase;
-  static mongoDB = MongoDBDatabase;
+  static dbType = 'postgres';
   static postgresDB = PostgresDatabase;
 
-  // Initialize MongoDB models if using MongoDB
-  static useMongoModels(models) {
-    this.mongoDB.setModels(models);
-  }
-
-  // Helper to check if we should use Postgres (supports multiple aliases)
-  static _isPostgres() {
-    const t = (this.dbType || '').toLowerCase();
-    return t === 'postgres' || t === 'postgresql' || t === 'neon' || t === 'pg';
-  }
-
-  // Create
   static create(collection, item) {
-    if (this._isPostgres()) {
-      return this.postgresDB.create(collection, item);
-    }
-    if (this.dbType === 'mongodb') {
-      return this.mongoDB.create(collection, item);
-    }
-    return this.jsonDB.create(collection, item);
+    return this.postgresDB.create(collection, item);
   }
 
-  // Read by ID
   static read(collection, id) {
-    if (this._isPostgres()) {
-      return this.postgresDB.read(collection, id);
-    }
-    if (this.dbType === 'mongodb') {
-      return this.mongoDB.read(collection, id);
-    }
-    return this.jsonDB.read(collection, id);
+    return this.postgresDB.read(collection, id);
   }
 
-  // Read all
   static readAll(collection) {
-    if (this._isPostgres()) {
-      return this.postgresDB.readAll(collection);
-    }
-    if (this.dbType === 'mongodb') {
-      return this.mongoDB.readAll(collection);
-    }
-    return this.jsonDB.readAll(collection);
+    return this.postgresDB.readAll(collection);
   }
 
   static readProductsFiltered(options) {
-    if (this._isPostgres()) {
-      return this.postgresDB.readProductsFiltered(options);
-    }
-    return null;
+    return this.postgresDB.readProductsFiltered(options);
   }
 
   static readReviewsByProductId(productId) {
-    if (this._isPostgres()) {
-      return this.postgresDB.readReviewsByProductId(productId);
-    }
-    return null;
+    return this.postgresDB.readReviewsByProductId(productId);
   }
 
-  // Update
   static update(collection, id, updates) {
-    if (this._isPostgres()) {
-      return this.postgresDB.update(collection, id, updates);
-    }
-    if (this.dbType === 'mongodb') {
-      return this.mongoDB.update(collection, id, updates);
-    }
-    return this.jsonDB.update(collection, id, updates);
+    return this.postgresDB.update(collection, id, updates);
   }
 
-  // Delete
   static delete(collection, id) {
-    if (this._isPostgres()) {
-      return this.postgresDB.delete(collection, id);
-    }
-    if (this.dbType === 'mongodb') {
-      return this.mongoDB.delete(collection, id);
-    }
-    return this.jsonDB.delete(collection, id);
+    return this.postgresDB.delete(collection, id);
   }
 
-  // Find by field
   static findBy(collection, field, value) {
-    if (this._isPostgres()) {
-      return this.postgresDB.findBy(collection, field, value);
-    }
-    if (this.dbType === 'mongodb') {
-      return this.mongoDB.findBy(collection, field, value);
-    }
-    return this.jsonDB.findBy(collection, field, value);
+    return this.postgresDB.findBy(collection, field, value);
   }
 
-  // Filter by field
   static filterBy(collection, field, value) {
-    if (this._isPostgres()) {
-      return this.postgresDB.filterBy(collection, field, value);
-    }
-    if (this.dbType === 'mongodb') {
-      return this.mongoDB.filterBy(collection, field, value);
-    }
-    return this.jsonDB.filterBy(collection, field, value);
+    return this.postgresDB.filterBy(collection, field, value);
   }
 
-  // Get current database type
   static getDatabaseType() {
     return this.dbType;
   }

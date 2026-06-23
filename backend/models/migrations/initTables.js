@@ -381,6 +381,9 @@ const initializeTables = async (client) => {
     // Add new columns for hierarchical address (Region/City/District + Landmark)
     await client.query(`ALTER TABLE addresses ADD COLUMN IF NOT EXISTS district TEXT;`).catch(() => {});
     await client.query(`ALTER TABLE addresses ADD COLUMN IF NOT EXISTS landmark TEXT;`).catch(() => {});
+    await client.query(`ALTER TABLE addresses ADD COLUMN IF NOT EXISTS first_name TEXT;`).catch(() => {});
+    await client.query(`ALTER TABLE addresses ADD COLUMN IF NOT EXISTS middle_name TEXT;`).catch(() => {});
+    await client.query(`ALTER TABLE addresses ADD COLUMN IF NOT EXISTS last_name TEXT;`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_wishlists_user_id ON wishlists(user_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_payments_order_id ON payments(order_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pending_payments_order ON pending_payments(purchase_order_id);`);
@@ -404,6 +407,47 @@ const initializeTables = async (client) => {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_subscribers_email ON subscribers(email);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_subscribers_active ON subscribers(is_active);`);
+
+    // Product categories reference table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS categories (
+        id TEXT PRIMARY KEY,
+        slug TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL,
+        subtitle TEXT,
+        nav_section TEXT,
+        display_order INT DEFAULT 0,
+        is_active BOOLEAN DEFAULT true,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_categories_slug ON categories(slug);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_categories_nav_section ON categories(nav_section);`);
+
+    const { ALL_CATEGORIES, SHOP_BY_CATEGORY, MAIN_NAV_CATEGORIES } = require('../../utils/categories');
+    const shopSlugs = new Set(SHOP_BY_CATEGORY.map((c) => c.slug));
+    const mainNavSlugs = new Set(MAIN_NAV_CATEGORIES.map((c) => c.slug));
+
+    for (let i = 0; i < ALL_CATEGORIES.length; i++) {
+      const cat = ALL_CATEGORIES[i];
+      const navSection = shopSlugs.has(cat.slug)
+        ? 'shop_by_category'
+        : mainNavSlugs.has(cat.slug)
+          ? 'main_nav'
+          : 'legacy';
+      await client.query(
+        `INSERT INTO categories (id, slug, name, subtitle, nav_section, display_order, is_active)
+         VALUES ($1, $2, $3, $4, $5, $6, true)
+         ON CONFLICT (slug) DO UPDATE SET
+           name = EXCLUDED.name,
+           subtitle = EXCLUDED.subtitle,
+           nav_section = EXCLUDED.nav_section,
+           display_order = EXCLUDED.display_order,
+           updated_at = NOW()`,
+        [cat.slug, cat.slug, cat.name, cat.subtitle || '', navSection, i + 1]
+      );
+    }
 
     await client.query('COMMIT');
     console.log('✅ PostgreSQL tables initialized (or already existed).');

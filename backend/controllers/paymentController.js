@@ -1,6 +1,7 @@
 const Database = require('../models/DatabaseAdapter');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
+const Razorpay = require('razorpay');
 const { sendOrderStatusEmail, sendAdminNewOrderEmail } = require('../utils/emailService');
 const { notify } = require('./notificationController');
 
@@ -59,7 +60,7 @@ function verifyPaymentJwt(token) {
  * We now primarily rely on a signed JWT for security proof instead of a random shared secret.
  * The DB record mainly holds the data snapshot (items + shipping) and prevents replay after consumption.
  */
-async function createPendingPayment({ purchaseOrderId, amount, paymentToken, paymentJwt, userId, items, shippingAddress }) {
+async function createPendingPayment({ purchaseOrderId, amount, paymentToken, paymentJwt, userId, items, shippingAddress, razorpayOrderId }) {
   const expiresAt = new Date(Date.now() + 40 * 60 * 1000); // 40 minutes
 
   // Proactively ensure the payment_jwt column exists (for Postgres users; safe no-op otherwise or if already present)
@@ -81,6 +82,7 @@ async function createPendingPayment({ purchaseOrderId, amount, paymentToken, pay
     userId: userId || null,
     items: items || [],
     shippingAddress: shippingAddress || null,
+    razorpayOrderId: razorpayOrderId || null,
     expiresAt,
     createdAt: new Date()
   };
@@ -340,31 +342,20 @@ async function createOrderAfterPayment({ userId, orderId, paymentMethod, transac
       }
     }
     // Idempotency: if the order already exists (double callback / retry), return the existing order.
-    // Handles both Mongo (11000) and Postgres (23505 unique violation) duplicate key errors.
+    // Handles Postgres unique violation duplicate key errors.
     const isDuplicate = error && (
-      error.code === 11000 || 
-      error.codeName === 'DuplicateKey' || 
-      error.code === '23505' || 
+      error.code === '23505' ||
       (error.detail && error.detail.includes('already exists'))
     );
     if (isDuplicate) {
       try {
-        // Try by orderId first (unique field, works cross Mongo/Postgres)
         let existing = await Database.findBy('orders', 'orderId', orderId);
         if (existing) {
-          // Re-send confirmation email on recovery path (idempotent but useful)
           sendOrderStatusEmail(existing, 'confirmed').catch(() => {});
           return existing;
         }
 
-        // Then primary key variants (id for Postgres, _id for Mongo)
         existing = await Database.findBy('orders', 'id', orderId);
-        if (existing) {
-          sendOrderStatusEmail(existing, 'confirmed').catch(() => {});
-          return existing;
-        }
-
-        existing = await Database.findBy('orders', '_id', orderId);
         if (existing) {
           sendOrderStatusEmail(existing, 'confirmed').catch(() => {});
           return existing;
@@ -377,666 +368,274 @@ async function createOrderAfterPayment({ userId, orderId, paymentMethod, transac
   }
 }
 
-/** Whole NPR amounts as strings — must match exactly in signature + form POST. */
-const toEsewaAmountStr = (value) => {
-  return String(Math.max(0, Math.round(parseFloat(value) || 0)));
+const getRazorpayClient = () => {
+  const keyId = process.env.RAZORPAY_KEY_ID;
+  const keySecret = process.env.RAZORPAY_KEY_SECRET;
+  if (!keyId || !keySecret) return null;
+  return new Razorpay({ key_id: keyId, key_secret: keySecret });
 };
 
-const parseEsewaAmount = (value) => {
-  return Math.max(0, Math.round(parseFloat(value) || 0));
+const verifyRazorpaySignature = ({ orderId, paymentId, signature }) => {
+  const secret = process.env.RAZORPAY_KEY_SECRET;
+  if (!secret || !orderId || !paymentId || !signature) return false;
+  const expected = crypto
+    .createHmac('sha256', secret)
+    .update(`${orderId}|${paymentId}`)
+    .digest('hex');
+  return expected === signature;
 };
 
-const sanitizeEsewaTransactionUuid = (id) => {
-  const cleaned = String(id || '')
-    .trim()
-    .replace(/[^a-zA-Z0-9-]/g, '')
-    .slice(0, 40);
-  return cleaned || `AAOMS-${Date.now()}`;
+const toRazorpayPaise = (amountInRupees) => {
+  return Math.max(1, Math.round((parseFloat(amountInRupees) || 0) * 100));
 };
 
-const buildEsewaFormPayload = ({
-  amount,
-  purchaseOrderId,
-  successUrl,
-  failureUrl,
-  productCode,
-  secretKey,
-}) => {
-  const taxAmountStr = '0';
-  const serviceChargeStr = '0';
-  const deliveryChargeStr = '0';
-  const totalAmountStr = toEsewaAmountStr(amount);
-  const productAmountStr = toEsewaAmountStr(
-    parseEsewaAmount(amount)
-      - parseEsewaAmount(taxAmountStr)
-      - parseEsewaAmount(serviceChargeStr)
-      - parseEsewaAmount(deliveryChargeStr)
-  );
-  const transactionUuid = sanitizeEsewaTransactionUuid(purchaseOrderId);
-
-  const signedFieldNames = 'total_amount,transaction_uuid,product_code';
-  const message = `total_amount=${totalAmountStr},transaction_uuid=${transactionUuid},product_code=${productCode}`;
-  const signature = crypto.createHmac('sha256', secretKey).update(message).digest('base64');
-
-  return {
-    transactionUuid,
-    totalAmount: parseEsewaAmount(totalAmountStr),
-    message,
-    formData: {
-      amount: productAmountStr,
-      tax_amount: taxAmountStr,
-      total_amount: totalAmountStr,
-      transaction_uuid: transactionUuid,
-      product_code: productCode,
-      product_service_charge: serviceChargeStr,
-      product_delivery_charge: deliveryChargeStr,
-      success_url: successUrl,
-      failure_url: failureUrl,
-      signed_field_names: signedFieldNames,
-      signature,
-    },
-  };
-};
-
-/**
- * Real eSewa v2 Transaction Status Verification
- * This is the proper way to verify after redirect.
- */
-async function verifyEsewaTransactionStatus({ oid, amt, refId }) {
-  const productCode = process.env.ESEWA_MERCHANT_ID || 'EPAYTEST';
-
-  const totalAmount = parseEsewaAmount(amt);
-  if (!oid || totalAmount <= 0) {
-    return { verified: false, error: 'Missing oid or amount for status check' };
-  }
-
-  // Use documented GET query format for transaction status inquiry (examples from eSewa docs use query params; no signature body/header required for status lookup)
-  const statusUrl = `https://rc.esewa.com.np/api/epay/transaction/status/?product_code=${encodeURIComponent(productCode)}&total_amount=${totalAmount}&transaction_uuid=${encodeURIComponent(oid)}`;
-
+// ==================== VERIFY RAZORPAY PAYMENT ====================
+const verifyRazorpayPayment = async (req, res) => {
   try {
-    const response = await fetch(statusUrl, {
-      method: 'GET',
-      headers: { 'Accept': 'application/json' }
-    });
+    const {
+      razorpay_order_id: razorpayOrderId,
+      razorpay_payment_id: razorpayPaymentId,
+      razorpay_signature: razorpaySignature,
+      ptoken,
+    } = req.body;
 
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      console.error('[eSewa Status Check] HTTP error:', response.status, text);
-      return { verified: false, error: `HTTP ${response.status}` };
-    }
-
-    const data = await response.json();
-    console.log('[eSewa Status Check] Response for tx', oid, ':', JSON.stringify(data));
-
-    // eSewa returns status "COMPLETE" on success
-    if (data && (data.status === 'COMPLETE' || String(data.status || '').toUpperCase() === 'COMPLETE')) {
-      return { verified: true, data };
-    }
-
-    return { verified: false, data };
-  } catch (err) {
-    console.error('[eSewa Status Check] API call failed:', err.message);
-    return { verified: false, error: err.message };
-  }
-}
-
-// ==================== VERIFY ESEWA PAYMENT (SECURED + FALLBACK) ====================
-const verifyEsewaPayment = async (req, res) => {
-  try {
-    const { refId, oid, amt, ptoken } = req.body;
-
-    // Relaxed guard: allow recovery using ptoken (JWT) which carries purchaseOrderId + amount
-    // even if the gateway redirect didn't provide refId/amt (e.g. lost query params, refresh, direct visit after success).
-    if (!refId && !oid && !ptoken) {
+    if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required parameters (refId/oid or ptoken for recovery)'
+        message: 'Missing Razorpay payment verification fields',
+      });
+    }
+
+    if (!verifyRazorpaySignature({
+      orderId: razorpayOrderId,
+      paymentId: razorpayPaymentId,
+      signature: razorpaySignature,
+    })) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid Razorpay payment signature',
       });
     }
 
     const jwtPayload = ptoken ? verifyPaymentJwt(ptoken) : null;
+    let orderId = jwtPayload?.purchaseOrderId || null;
+    let amountToVerify = jwtPayload?.amount != null ? parseFloat(jwtPayload.amount) : null;
 
-    // Prefer values from the signed JWT (exact values we used when initiating to eSewa)
-    let orderId = oid || refId;
-    let amountToVerify = parseFloat(amt);
+    const pendingRecord = orderId ? await findPendingPayment(orderId) : null;
 
-    if (jwtPayload) {
-      if (jwtPayload.purchaseOrderId) {
-        if (orderId && orderId !== jwtPayload.purchaseOrderId) {
-          console.log('[eSewa Verify] oid/refId from callback differs from ptoken JWT, preferring JWT purchaseOrderId');
+    if (!orderId && pendingRecord?.purchaseOrderId) {
+      orderId = pendingRecord.purchaseOrderId;
+    }
+
+    if (!orderId) {
+      try {
+        const allPending = await Database.readAll('pendingPayments');
+        const matched = allPending.find((record) => record.razorpayOrderId === razorpayOrderId);
+        if (matched) {
+          orderId = matched.purchaseOrderId || matched._id;
+          if (!amountToVerify && matched.amount != null) amountToVerify = parseFloat(matched.amount);
         }
-        orderId = jwtPayload.purchaseOrderId;
-      }
-      if (jwtPayload.amount != null) {
-        if (amountToVerify && Math.abs(amountToVerify - jwtPayload.amount) > 0.1) {
-          console.log('[eSewa Verify] amt from callback differs from ptoken JWT, preferring JWT amount for status check');
-        }
-        amountToVerify = jwtPayload.amount;
-      }
-    }
-
-    // Fallback recovery (if no/partial JWT)
-    if (!amountToVerify && jwtPayload && jwtPayload.amount) {
-      amountToVerify = jwtPayload.amount;
-      console.log('[eSewa Verify] Recovered amount from ptoken JWT:', amountToVerify);
-    }
-
-    if (!amountToVerify) {
-      return res.status(400).json({
-        success: false,
-        message: 'Missing amount (amt) and could not recover from ptoken'
-      });
-    }
-
-    // Recover orderId from JWT if the redirect didn't provide oid/refId
-    if (!orderId && jwtPayload && jwtPayload.purchaseOrderId) {
-      orderId = jwtPayload.purchaseOrderId;
-      console.log('[eSewa Verify] Recovered orderId from ptoken JWT:', orderId);
+      } catch (_) {}
     }
 
     if (!orderId) {
       return res.status(400).json({
         success: false,
-        message: 'Missing order identifier (oid/refId) and could not recover from ptoken'
+        message: 'Could not match Razorpay order to a pending checkout',
       });
     }
 
-    // === First, try to validate as a signed JWT (new preferred model) ===
-    // (jwtPayload already decoded above)
+    const snapshot = pendingRecord || (await findPendingPayment(orderId)) || {};
+    let storedUserId = jwtPayload?.userId || snapshot.userId || getUserIdFromRequest(req) || null;
 
-    // === Look up DB record (for snapshot data) ===
-    const pendingRecord = await findPendingPayment(orderId);
-    let usedFallback = false;
-    let storedUserId = null;
-    let snapshot = {};
-
-    // Strong path: Valid signed JWT
-    if (jwtPayload && jwtPayload.purchaseOrderId === orderId) {
-      // JWT is cryptographically valid and not expired → we have strong proof of legitimate initiation
-      if (Math.abs(jwtPayload.amount - amountToVerify) > 0.5) {
-        return res.status(400).json({
-          success: false,
-          message: 'Amount mismatch with initiated payment'
-        });
-      }
-      storedUserId = jwtPayload.userId || pendingRecord?.userId || null;
-      snapshot = pendingRecord || {};
-    }
-    // Legacy support: random token still stored in DB (during transition)
-    else if (pendingRecord && ptoken && pendingRecord.paymentToken === ptoken) {
-      if (Math.abs(pendingRecord.amount - amountToVerify) > 0.5) {
-        return res.status(400).json({
-          success: false,
-          message: 'Amount mismatch with initiated payment'
-        });
-      }
-      storedUserId = pendingRecord.userId || null;
-      snapshot = pendingRecord;
-    } else {
-      // === FALLBACK / RECOVERY PATH ===
-      usedFallback = true;
-      console.warn(`[eSewa Verify] No valid JWT or matching token for ${orderId} — using eSewa status check only (recovery mode)`);
-      storedUserId = (jwtPayload?.userId || pendingRecord?.userId) || getUserIdFromRequest(req) || null;
-      snapshot = pendingRecord || {};
-    }
-
-    // === eSewa Transaction Status Check via official API (always performed for confirmation) ===
-    const statusResult = await verifyEsewaTransactionStatus({
-      oid: orderId,
-      amt: amountToVerify,
-      refId
-    });
-
-    if (!statusResult.verified) {
+    if (jwtPayload && jwtPayload.purchaseOrderId !== orderId) {
       return res.status(400).json({
         success: false,
-        message: usedFallback 
-          ? 'eSewa has not confirmed this transaction yet. Please wait a moment and try again or contact support.'
-          : 'eSewa transaction verification failed',
-        details: statusResult.data || statusResult.error,
-        fallbackUsed: usedFallback
+        message: 'Payment token does not match this order',
       });
     }
 
-    // Consume / delete the pending record
-    if (pendingRecord) {
+    const razorpay = getRazorpayClient();
+    if (razorpay) {
+      try {
+        const payment = await razorpay.payments.fetch(razorpayPaymentId);
+        const paidPaise = Number(payment.amount) || 0;
+        const expectedPaise = toRazorpayPaise(amountToVerify || snapshot.amount || 0);
+        if (paidPaise > 0 && Math.abs(paidPaise - expectedPaise) > 1) {
+          return res.status(400).json({
+            success: false,
+            message: 'Paid amount does not match the initiated order total',
+          });
+        }
+        if (!['captured', 'authorized'].includes(String(payment.status || '').toLowerCase())) {
+          return res.status(400).json({
+            success: false,
+            message: `Razorpay payment is not completed (status: ${payment.status})`,
+          });
+        }
+        if (!amountToVerify && paidPaise > 0) {
+          amountToVerify = paidPaise / 100;
+        }
+      } catch (fetchErr) {
+        console.warn('[Razorpay Verify] Payment fetch failed, proceeding with signature only:', fetchErr.message);
+      }
+    }
+
+    if (!amountToVerify) {
+      amountToVerify = parseFloat(snapshot.amount) || 0;
+    }
+
+    if (pendingRecord || snapshot.purchaseOrderId) {
       await deletePendingPayment(orderId);
     }
 
-    const esewaResponseData = statusResult.data || {};
-    // Prefer eSewa's transaction_code / ref from status response for the stored transactionId (more useful than our internal oid)
-    const transactionRef = refId || esewaResponseData.transaction_code || esewaResponseData.ref_id || esewaResponseData.reference_id || orderId;
-
-    // Idempotency: if order already exists (e.g. double callback from strict mode / refresh), return it
     let newOrder = await Database.findBy('orders', 'orderId', orderId);
     let orderCreateWarning = null;
+
     if (!newOrder) {
       try {
         newOrder = await createOrderAfterPayment({
           userId: storedUserId,
           orderId,
-          paymentMethod: 'esewa',
-          transactionId: transactionRef,
+          paymentMethod: 'razorpay',
+          transactionId: razorpayPaymentId,
           amount: amountToVerify,
-          paymentGateway: 'esewa',
+          paymentGateway: 'razorpay',
           items: snapshot.items || [],
-          shippingAddress: snapshot.shippingAddress || null
+          shippingAddress: snapshot.shippingAddress || null,
         });
       } catch (orderCreateErr) {
-        console.error('[eSewa Verify] Order creation failed (payment was confirmed by eSewa):', orderCreateErr.message);
-        orderCreateWarning = 'Order record could not be created due to a temporary issue. Please contact support with your order ID. Your payment has been confirmed.';
-        // Return a minimal success order so frontend shows success
+        console.error('[Razorpay Verify] Order creation failed (payment confirmed):', orderCreateErr.message);
+        orderCreateWarning = 'Order record could not be created due to a temporary issue. Please contact support. Payment confirmed.';
         newOrder = {
           id: orderId,
           orderId,
           status: 'confirmed',
           paymentStatus: 'completed',
-          paymentMethod: 'esewa',
+          paymentMethod: 'razorpay',
           amount: amountToVerify,
           createdAt: new Date().toISOString(),
         };
       }
     }
 
-    // Clear the user's cart now that the order is paid
     await clearUserCart(storedUserId);
 
     return res.json({
       success: true,
-      message: orderCreateWarning 
-        ? (usedFallback ? 'Payment verified via eSewa (recovery mode)' : 'eSewa payment verified successfully') + ' ' + orderCreateWarning
-        : (usedFallback 
-            ? 'Payment verified via eSewa (recovery mode)' 
-            : 'eSewa payment verified successfully'),
+      message: orderCreateWarning
+        ? `Razorpay payment verified successfully. ${orderCreateWarning}`
+        : 'Razorpay payment verified successfully',
       order: newOrder,
-      data: { 
-        refId, 
-        amount: amountToVerify, 
-        status: 'COMPLETE', 
-        fallbackUsed: usedFallback,
-        warning: orderCreateWarning 
-      }
-    });
-
-  } catch (error) {
-    console.error('[eSewa Verify] Error:', error.message);
-    return res.status(500).json({
-      success: false,
-      message: 'Error verifying eSewa payment'
-    });
-  }
-};
-
-// ==================== VERIFY KHALTI PAYMENT (SECURED) ====================
-const verifyKhaltiPayment = async (req, res) => {
-  try {
-    const { pidx, token, amount, ptoken } = req.body;
-
-    // Relaxed: support recovery when we have ptoken (which may carry purchaseOrderId)
-    // or when frontend stored the pidx at initiate time (Khalti gives pidx upfront).
-    if (!pidx && !token && !ptoken) {
-      return res.status(400).json({
-        success: false,
-        message: 'Missing required parameters (pidx/token or ptoken for recovery)'
-      });
-    }
-
-    const secretKey = process.env.KHALTI_SECRET_KEY;
-    if (!secretKey) {
-      return res.status(500).json({
-        success: false,
-        message: 'Khalti secret key not configured'
-      });
-    }
-
-    const verificationUrl = pidx
-      ? 'https://a.khalti.com/api/v2/epayment/lookup/'
-      : 'https://khalti.com/api/payment/verify/';
-
-    const bodyData = pidx ? { pidx } : { token, amount: parseInt(amount) };
-
-    const response = await fetch(verificationUrl, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Key ${secretKey}`,
-        'Content-Type': 'application/json'
+      data: {
+        razorpay_order_id: razorpayOrderId,
+        razorpay_payment_id: razorpayPaymentId,
+        amount: amountToVerify,
+        warning: orderCreateWarning,
       },
-      body: JSON.stringify(bodyData)
     });
-
-    const data = await response.json();
-
-    if (response.ok && (data.status === 'Completed' || data.state?.name === 'Completed')) {
-      const amountInRupees = parseFloat(data.amount || amount) / 100;
-
-      // === Try JWT validation first (new model) ===
-      const jwtPayload = ptoken ? verifyPaymentJwt(ptoken) : null;
-
-      let matchedOrderId = jwtPayload?.purchaseOrderId || pidx || token || req.body.orderId || req.body.purchase_order_id;
-      let pendingRecord = null;
-      let usedFallback = false;
-
-      if (matchedOrderId) {
-        pendingRecord = await findPendingPayment(matchedOrderId);
-      }
-
-      // Legacy random token lookup (transition period)
-      if (!pendingRecord && ptoken) {
-        const allPending = await Database.readAll('pendingPayments').catch(() => []);
-        for (const rec of allPending) {
-          if (rec.paymentToken === ptoken && new Date(rec.expiresAt) > new Date()) {
-            pendingRecord = rec;
-            matchedOrderId = rec.purchaseOrderId;
-            break;
-          }
-        }
-      }
-
-      // Determine if we have strong proof
-      const hasStrongProof = jwtPayload && jwtPayload.purchaseOrderId === matchedOrderId;
-
-      if (!pendingRecord && !hasStrongProof) {
-        usedFallback = true;
-        console.warn(`[Khalti Verify] No valid JWT and no pending record — accepting based on Khalti response only (fallback)`);
-        matchedOrderId = matchedOrderId || `KHALTI-${Date.now()}`;
-      }
-
-      const storedUserId = (jwtPayload?.userId || pendingRecord?.userId) || getUserIdFromRequest(req) || null;
-
-      if (pendingRecord) {
-        await deletePendingPayment(matchedOrderId);
-      }
-
-      // Idempotency guard (same as eSewa)
-      let newOrder = await Database.findBy('orders', 'orderId', matchedOrderId);
-      let orderCreateWarning = null;
-      if (!newOrder) {
-        try {
-          newOrder = await createOrderAfterPayment({
-            userId: storedUserId,
-            orderId: matchedOrderId,
-            paymentMethod: 'khalti',
-            transactionId: pidx || token,
-            amount: amountInRupees,
-            paymentGateway: 'khalti',
-            items: pendingRecord?.items || [],
-            shippingAddress: pendingRecord?.shippingAddress || null
-          });
-        } catch (orderCreateErr) {
-          console.error('[Khalti Verify] Order creation failed (payment confirmed by Khalti):', orderCreateErr.message);
-          orderCreateWarning = 'Order record could not be created due to a temporary issue. Please contact support. Payment confirmed.';
-          newOrder = {
-            id: matchedOrderId,
-            orderId: matchedOrderId,
-            status: 'confirmed',
-            paymentStatus: 'completed',
-            paymentMethod: 'khalti',
-            amount: amountInRupees,
-            createdAt: new Date().toISOString(),
-          };
-        }
-      }
-
-      // Clear the user's cart now that the order is paid
-      await clearUserCart(storedUserId);
-
-      return res.json({
-        success: true,
-        message: orderCreateWarning 
-          ? (usedFallback ? 'Khalti payment verified (recovery mode)' : 'Khalti payment verified successfully') + ' ' + orderCreateWarning 
-          : (usedFallback ? 'Khalti payment verified (recovery mode)' : 'Khalti payment verified successfully'),
-        order: newOrder,
-        data: {
-          pidx: data.pidx || pidx,
-          status: 'COMPLETED',
-          amount: amountInRupees,
-          fallbackUsed: usedFallback,
-          warning: orderCreateWarning
-        }
-      });
-    }
-
-    return res.status(400).json({
-      success: false,
-      message: 'Payment verification failed',
-      khalti_response: data
-    });
-
   } catch (error) {
-    console.error('[Khalti Verify] Error:', error.message);
+    console.error('[Razorpay Verify] Error:', error.message);
     return res.status(500).json({
       success: false,
-      message: 'Error verifying Khalti payment'
+      message: 'Error verifying Razorpay payment',
     });
   }
 };
 
-// ==================== INITIATE KHALTI EPAYMENT ====================
-const initiateKhaltiEpayment = async (req, res) => {
+// ==================== INITIATE RAZORPAY PAYMENT ====================
+const initiateRazorpayPayment = async (req, res) => {
   try {
-    const {
-      return_url,
-      website_url,
-      amount,
-      purchase_order_id,
-      purchase_order_name = 'AAOMS Order',
-      customer_info = {}
-    } = req.body;
+    const { amount, purchase_order_id } = req.body;
 
     if (!amount || !purchase_order_id) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required parameters: amount and purchase_order_id'
+        message: 'Missing required fields: amount and purchase_order_id',
       });
     }
 
-    const secretKey = process.env.KHALTI_SECRET_KEY;
-    if (!secretKey) {
+    const razorpay = getRazorpayClient();
+    if (!razorpay) {
       return res.status(500).json({
         success: false,
-        message: 'Khalti secret key not configured'
+        message: 'Razorpay credentials not configured',
       });
     }
 
-    const amountInPaisa = Math.round(amount * 100);
+    const totalAmount = parseFloat(amount);
+    const amountInPaise = toRazorpayPaise(totalAmount);
 
-    const response = await fetch('https://a.khalti.com/api/v2/epayment/initiate/', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Key ${secretKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        return_url: return_url || (process.env.FRONTEND_URL + '/payment/success'),
-        website_url: website_url || process.env.FRONTEND_URL || 'http://localhost:3000',
-        amount: amountInPaisa,
-        purchase_order_id,
-        purchase_order_name,
-        customer_info: {
-          name: customer_info.name || 'Customer',
-          email: customer_info.email || '',
-          phone: customer_info.phone || ''
-        }
-      })
-    });
-
-    const data = await response.json();
-
-    if (response.ok && data.payment_url) {
-      const userIdFromToken = getUserIdFromRequest(req);
-
-      // New preferred security model: signed JWT
-      const paymentJwt = generatePaymentJwt({
-        purchaseOrderId: purchase_order_id,
-        amount: parseFloat(amount),
-        userId: userIdFromToken
-      });
-
-      // Also keep a random token for legacy clients during transition
-      const legacyToken = generatePaymentToken();
-
-      // Persist both in DB (JWT is the real security proof now)
-      await createPendingPayment({
-        purchaseOrderId: purchase_order_id,
-        amount: parseFloat(amount),
-        paymentToken: legacyToken,
-        paymentJwt,
-        userId: userIdFromToken || req.user?.id || null,
-        items: req.body.items || [],
-        shippingAddress: req.body.shippingAddress || null
-      });
-
-      return res.json({
-        success: true,
-        message: 'Khalti e-Payment initiated successfully',
-        data: {
-          payment_url: data.payment_url,
-          pidx: data.pidx,
-          expires_at: data.expires_at,
-          paymentToken: paymentJwt,        // Send JWT as the token the client must return (works transparently)
-          purchase_order_id: purchase_order_id
-        }
-      });
-    }
-
-    return res.status(400).json({
-      success: false,
-      message: 'Failed to initiate Khalti payment',
-      error: data
-    });
-
-  } catch (error) {
-    console.error('[Khalti Initiate] Error:', error.message);
-    return res.status(500).json({
-      success: false,
-      message: 'Payment initiation failed'
-    });
-  }
-};
-
-// ==================== INITIATE ESEWA PAYMENT (v2) - SECURED ====================
-const initiateEsewaPayment = async (req, res) => {
-  try {
-    const {
-      amount,
-      purchase_order_id,
-      success_url,
-      failure_url
-    } = req.body;
-
-    if (!amount || !purchase_order_id) {
+    if (amountInPaise <= 0) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields: amount and purchase_order_id'
+        message: 'Invalid amount for Razorpay payment',
       });
     }
 
-    // Basic sanity for eSewa (helps avoid 428 precondition on their end)
-    const productCode = process.env.ESEWA_MERCHANT_ID || 'EPAYTEST';
-    const secretKey = process.env.ESEWA_SECRET_KEY || '8gBm/:&EnhH.1/q';
-
-    const resolvedSuccessUrl = success_url
-      || process.env.ESEWA_SUCCESS_URL
-      || `${process.env.FRONTEND_URL || 'http://localhost:3000'}/payment/success`;
-    const resolvedFailureUrl = failure_url
-      || process.env.ESEWA_FAILURE_URL
-      || `${process.env.FRONTEND_URL || 'http://localhost:3000'}/payment/failure`;
-
-    const esewaPayload = buildEsewaFormPayload({
-      amount,
-      purchaseOrderId: purchase_order_id,
-      successUrl: resolvedSuccessUrl,
-      failureUrl: resolvedFailureUrl,
-      productCode,
-      secretKey,
+    const razorpayOrder = await razorpay.orders.create({
+      amount: amountInPaise,
+      currency: 'INR',
+      receipt: String(purchase_order_id).slice(0, 40),
+      payment_capture: 1,
     });
-
-    const { transactionUuid, totalAmount, formData: formDataForEsewa, message } = esewaPayload;
-
-    if (totalAmount <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid amount for eSewa payment'
-      });
-    }
 
     const userIdFromToken = getUserIdFromRequest(req);
-
-    // Preferred security model: signed JWT (self-contained proof of initiation)
     const paymentJwt = generatePaymentJwt({
-      purchaseOrderId: transactionUuid,
+      purchaseOrderId: purchase_order_id,
       amount: totalAmount,
-      userId: userIdFromToken
+      userId: userIdFromToken,
     });
-
-    // Legacy random token (kept during transition)
     const legacyToken = generatePaymentToken();
 
-    // Persist record with JWT as the primary security credential
-    // Make this non-fatal: the JWT is self-contained for security; the DB snapshot is best-effort for order reconstruction.
     try {
       await createPendingPayment({
-        purchaseOrderId: transactionUuid,
+        purchaseOrderId: purchase_order_id,
         amount: totalAmount,
         paymentToken: legacyToken,
         paymentJwt,
         userId: userIdFromToken || req.user?.id || null,
         items: req.body.items || [],
-        shippingAddress: req.body.shippingAddress || null
+        shippingAddress: req.body.shippingAddress || null,
+        razorpayOrderId: razorpayOrder.id,
       });
     } catch (persistErr) {
-      console.warn('[eSewa Initiate] Warning: Failed to persist pending payment record (proceeding anyway):', persistErr.message);
+      console.warn('[Razorpay Initiate] Failed to persist pending payment (proceeding):', persistErr.message);
     }
 
-    if (process.env.NODE_ENV === 'development') {
-      console.log('[eSewa Initiate]', {
-        productCode,
-        totalAmount,
-        transactionUuid,
-        message,
-        formData: formDataForEsewa,
-      });
-    }
-
-    const esewaFormUrl = 'https://rc-epay.esewa.com.np/api/epay/main/v2/form';
-
-    // Return the signed JWT as paymentToken (frontend just forwards it as ptoken on callback)
     return res.json({
       success: true,
-      message: 'eSewa payment initiated',
+      message: 'Razorpay payment initiated',
       data: {
-        esewa_url: esewaFormUrl,
-        paymentToken: paymentJwt,        // Now a signed JWT instead of random hex
-        purchase_order_id: transactionUuid,
-        form_data: formDataForEsewa
-      }
+        key_id: process.env.RAZORPAY_KEY_ID,
+        razorpay_order_id: razorpayOrder.id,
+        amount: amountInPaise,
+        currency: razorpayOrder.currency || 'INR',
+        paymentToken: paymentJwt,
+        purchase_order_id,
+      },
     });
-
   } catch (error) {
-    console.error('[eSewa Initiate] Error:', error.message);
+    console.error('[Razorpay Initiate] Error:', error.message);
     return res.status(500).json({
       success: false,
-      message: 'Failed to initiate eSewa payment',
-      error: process.env.NODE_ENV === 'development' ? (error.message || error.toString()) : undefined
+      message: 'Failed to initiate Razorpay payment',
+      error: process.env.NODE_ENV === 'development' ? (error.message || error.toString()) : undefined,
     });
   }
 };
 
 // ==================== GET PAYMENT METHODS ====================
 const getPaymentMethods = (req, res) => {
+  const razorpayConfigured = !!(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET);
+
   const methods = [
     {
-      id: 'esewa',
-      name: 'eSewa',
-      description: 'Pay securely with eSewa',
-      enabled: true
+      id: 'razorpay',
+      name: 'Razorpay',
+      description: 'Pay securely with UPI, cards, netbanking & wallets',
+      enabled: razorpayConfigured,
     },
-    {
-      id: 'khalti',
-      name: 'Khalti',
-      description: 'Pay securely with Khalti',
-      enabled: true
-    }
   ];
 
   res.json({
@@ -1135,10 +734,8 @@ const getAdminRevenueSummary = async (req, res) => {
 // ==================== EXPORTS ====================
 module.exports = {
   getPaymentMethods,
-  verifyEsewaPayment,
-  verifyKhaltiPayment,
-  initiateEsewaPayment,
-  initiateKhaltiEpayment,
+  verifyRazorpayPayment,
+  initiateRazorpayPayment,
   getAdminRevenueSummary,
-  getAdminPayments
+  getAdminPayments,
 };
