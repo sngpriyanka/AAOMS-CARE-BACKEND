@@ -210,7 +210,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/wishlist', wishlistRoutes);
 app.use('/api/addresses', addressRoutes);
 app.use('/api/upload', uploadRoutes);
-app.use('/api/payment', paymentRoutes);   // ← Important: payment routes mounted here
+app.use('/api/payment', paymentRoutes);
 app.use('/api/instagram-feed', instagramFeedRoutes);
 app.use('/api/banners', bannerRoutes);
 app.use('/api/testimonials', testimonialRoutes);
@@ -220,20 +220,22 @@ app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/contact', contactRoutes);
 app.use('/api/categories', categoryRoutes);
 
-// ==================== 404 & Error Handling ====================
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: 'Route not found'
-  });
+// ==================== Serve React Frontend ====================
+const path = require('path');
+
+app.use(express.static(path.join(__dirname, 'build')));
+
+// This must be AFTER all API routes
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'build', 'index.html'));
 });
 
+// ==================== Error Handling ====================
 app.use((err, req, res, next) => {
   console.error('Server Error:', err.message);
   if (err.stack) {
     console.error(err.stack);
   }
-  // Log request context for 5xx debugging
   if (!err.status || err.status >= 500) {
     console.error('  →', req.method, req.originalUrl, 'body:', JSON.stringify(req.body).slice(0, 300));
   }
@@ -264,7 +266,6 @@ connectDatabase().then(() => {
     console.log('   GET  /api/database-status');
     console.log('   POST /api/payment/razorpay/create-order');
     console.log('   POST /api/payment/razorpay/verify');
-
     console.log('   GET  /api/payment/methods');
     console.log('   POST /api/subscriptions/subscribe  (public)');
     console.log('   POST /api/subscriptions/send-newsletter  (admin)\n');
