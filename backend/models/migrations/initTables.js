@@ -205,6 +205,7 @@ const initializeTables = async (client) => {
         user_id TEXT,
         items JSONB DEFAULT '[]',
         shipping_address JSONB,
+        razorpay_order_id TEXT,
         expires_at TIMESTAMPTZ NOT NULL,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -221,6 +222,15 @@ const initializeTables = async (client) => {
     await client.query(`
       ALTER TABLE pending_payments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
     `);
+
+    // Link pending checkout rows to Razorpay order ids for verify fallback
+    await client.query(`
+      ALTER TABLE pending_payments ADD COLUMN IF NOT EXISTS razorpay_order_id TEXT;
+    `).catch(() => {});
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_pending_payments_razorpay_order
+      ON pending_payments(razorpay_order_id);
+    `).catch(() => {});
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS instagram_feeds (
@@ -536,11 +546,46 @@ const ensureSubscribersTable = async (client) => {
   await client.query(`CREATE INDEX IF NOT EXISTS idx_subscribers_active ON subscribers(is_active);`).catch(() => {});
 };
 
+const ensureAddressesSchemaPatches = async (client) => {
+  // Hierarchical / structured address fields (idempotent for existing DBs)
+  await client.query(`ALTER TABLE addresses ADD COLUMN IF NOT EXISTS district TEXT;`).catch(() => {});
+  await client.query(`ALTER TABLE addresses ADD COLUMN IF NOT EXISTS landmark TEXT;`).catch(() => {});
+  await client.query(`ALTER TABLE addresses ADD COLUMN IF NOT EXISTS first_name TEXT;`).catch(() => {});
+  await client.query(`ALTER TABLE addresses ADD COLUMN IF NOT EXISTS middle_name TEXT;`).catch(() => {});
+  await client.query(`ALTER TABLE addresses ADD COLUMN IF NOT EXISTS last_name TEXT;`).catch(() => {});
+};
+
+const ensurePendingPaymentsSchemaPatches = async (client) => {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS pending_payments (
+      id TEXT PRIMARY KEY,
+      purchase_order_id TEXT UNIQUE NOT NULL,
+      payment_token TEXT NOT NULL,
+      payment_jwt TEXT,
+      amount NUMERIC NOT NULL,
+      user_id TEXT,
+      items JSONB DEFAULT '[]',
+      shipping_address JSONB,
+      razorpay_order_id TEXT,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `).catch(() => {});
+  await client.query(`ALTER TABLE pending_payments ADD COLUMN IF NOT EXISTS payment_jwt TEXT;`).catch(() => {});
+  await client.query(`ALTER TABLE pending_payments ADD COLUMN IF NOT EXISTS razorpay_order_id TEXT;`).catch(() => {});
+  await client.query(`ALTER TABLE pending_payments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();`).catch(() => {});
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_pending_payments_order ON pending_payments(purchase_order_id);`).catch(() => {});
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_pending_payments_razorpay_order ON pending_payments(razorpay_order_id);`).catch(() => {});
+};
+
 const ensureSchemaPatches = async (client) => {
   await ensureAuthSchemaPatches(client);
   await ensureContactMessagesTable(client);
   await ensureTestimonialsTable(client);
   await ensureSubscribersTable(client);
+  await ensureAddressesSchemaPatches(client);
+  await ensurePendingPaymentsSchemaPatches(client);
 };
 
 module.exports = {
@@ -549,5 +594,6 @@ module.exports = {
   ensureContactMessagesTable,
   ensureTestimonialsTable,
   ensureSubscribersTable,
+  ensureAddressesSchemaPatches,
   ensureSchemaPatches
 };

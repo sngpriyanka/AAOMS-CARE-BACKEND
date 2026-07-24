@@ -39,10 +39,24 @@ if (missingEnvVars.length > 0) {
   process.exit(1);
 }
 
-// Warn about payment configuration
-if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
-  console.warn('⚠️  Razorpay credentials not configured. Razorpay payments will be disabled.');
-}
+// Warn about payment configuration (reject empty / placeholder keys)
+(() => {
+  const id = (process.env.RAZORPAY_KEY_ID || '').trim();
+  const secret = (process.env.RAZORPAY_KEY_SECRET || '').trim();
+  const bad =
+    !id ||
+    !secret ||
+    /x{4,}|your_razorpay|placeholder|changeme/i.test(id + secret);
+  if (bad) {
+    console.warn(
+      '⚠️  Razorpay credentials not configured (or still placeholders).\n' +
+        '   Set real RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in backend/.env\n' +
+        '   from https://dashboard.razorpay.com/app/keys — payments will fail until then.'
+    );
+  } else {
+    console.log(`✅ Razorpay configured (key: ${id.slice(0, 12)}…)`);
+  }
+})();
 
 
 // ==================== Import Database ====================

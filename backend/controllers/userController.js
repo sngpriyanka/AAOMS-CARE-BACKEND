@@ -2,12 +2,8 @@ const Database = require('../models/DatabaseAdapter');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
-const {
-  toPhone10,
-  formatIndianPhone,
-  validatePhoneOrEmpty,
-  INDIAN_MOBILE_ERROR,
-} = require('../utils/phoneUtils');
+const { toPhone10, formatIndianPhone } = require('../utils/phoneUtils');
+const { validatePhoneOrEmpty, INDIAN_MOBILE_ERROR } = require('../utils/validators');
 
 const USERS_COLLECTION = 'users';
 const ADMINS_COLLECTION = 'admins';

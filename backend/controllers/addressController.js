@@ -7,6 +7,39 @@ const {
   validateAddressFields,
   addressesAreDuplicate,
 } = require('../utils/addressUtils');
+const { ensureAddressesSchemaPatches } = require('../models/migrations/initTables');
+const { getPool } = require('../models/postgres');
+
+/** If Postgres rejects unknown address columns, apply schema patches and retry once. */
+const withAddressSchemaRetry = async (operation) => {
+  try {
+    return await operation();
+  } catch (error) {
+    const msg = String(error?.message || '');
+    const missingColumn =
+      msg.includes('does not exist') &&
+      (msg.includes('first_name') ||
+        msg.includes('middle_name') ||
+        msg.includes('last_name') ||
+        msg.includes('landmark') ||
+        msg.includes('district'));
+
+    if (!missingColumn) throw error;
+
+    const pool = getPool();
+    if (!pool) throw error;
+
+    console.warn('[Address] Missing column detected — applying address schema patches and retrying once');
+    const client = await pool.connect();
+    try {
+      await ensureAddressesSchemaPatches(client);
+    } finally {
+      client.release();
+    }
+
+    return operation();
+  }
+};
 
 const mapStoredAddress = (address) => ({
   ...address,
@@ -116,7 +149,7 @@ exports.addAddress = async (req, res) => {
       isDefault: fields.isDefault,
     };
 
-    await Database.create('addresses', newAddressData);
+    await withAddressSchemaRetry(() => Database.create('addresses', newAddressData));
 
     const userAddresses = (await Database.readAll('addresses'))
       .filter((addr) => addr.userId === userId)
@@ -132,7 +165,7 @@ exports.addAddress = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error adding address',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      error: error.message,
     });
   }
 };
@@ -213,7 +246,7 @@ exports.updateAddress = async (req, res) => {
       updatedAt: new Date().toISOString(),
     };
 
-    await Database.update('addresses', addressId, updates);
+    await withAddressSchemaRetry(() => Database.update('addresses', addressId, updates));
 
     if (fields.isDefault) {
       const otherDefaults = allAddresses.filter(
@@ -222,7 +255,9 @@ exports.updateAddress = async (req, res) => {
       for (const addr of otherDefaults) {
         await Database.update('addresses', addr.id, { isDefault: false });
       }
-      await Database.update('addresses', addressId, { isDefault: true });
+      await withAddressSchemaRetry(() =>
+        Database.update('addresses', addressId, { isDefault: true })
+      );
     }
 
     const userAddresses = (await Database.readAll('addresses'))
@@ -239,7 +274,7 @@ exports.updateAddress = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error updating address',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      error: error.message,
     });
   }
 };

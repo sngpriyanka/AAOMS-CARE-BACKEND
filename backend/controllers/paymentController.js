@@ -368,21 +368,50 @@ async function createOrderAfterPayment({ userId, orderId, paymentMethod, transac
   }
 }
 
+const isPlaceholderCredential = (value) => {
+  if (!value || !String(value).trim()) return true;
+  const v = String(value).trim();
+  return (
+    /x{4,}/i.test(v) ||
+    /your_razorpay/i.test(v) ||
+    /placeholder/i.test(v) ||
+    /changeme/i.test(v) ||
+    v === 'rzp_test_xxxxxxxxxxxxxxx' ||
+    v === 'rzp_xxxxxxxxxxxxxxx'
+  );
+};
+
+const getRazorpayCredentials = () => {
+  const keyId = (process.env.RAZORPAY_KEY_ID || '').trim();
+  const keySecret = (process.env.RAZORPAY_KEY_SECRET || '').trim();
+  if (isPlaceholderCredential(keyId) || isPlaceholderCredential(keySecret)) {
+    return { keyId: null, keySecret: null, configured: false };
+  }
+  return { keyId, keySecret, configured: true };
+};
+
 const getRazorpayClient = () => {
-  const keyId = process.env.RAZORPAY_KEY_ID;
-  const keySecret = process.env.RAZORPAY_KEY_SECRET;
-  if (!keyId || !keySecret) return null;
+  const { keyId, keySecret, configured } = getRazorpayCredentials();
+  if (!configured) return null;
   return new Razorpay({ key_id: keyId, key_secret: keySecret });
 };
 
 const verifyRazorpaySignature = ({ orderId, paymentId, signature }) => {
-  const secret = process.env.RAZORPAY_KEY_SECRET;
-  if (!secret || !orderId || !paymentId || !signature) return false;
+  const { keySecret } = getRazorpayCredentials();
+  if (!keySecret || !orderId || !paymentId || !signature) return false;
   const expected = crypto
-    .createHmac('sha256', secret)
+    .createHmac('sha256', keySecret)
     .update(`${orderId}|${paymentId}`)
     .digest('hex');
-  return expected === signature;
+  // timing-safe compare
+  try {
+    const a = Buffer.from(expected, 'utf8');
+    const b = Buffer.from(String(signature), 'utf8');
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  } catch (_) {
+    return expected === signature;
+  }
 };
 
 const toRazorpayPaise = (amountInRupees) => {
@@ -555,29 +584,40 @@ const initiateRazorpayPayment = async (req, res) => {
       });
     }
 
+    const { keyId, configured } = getRazorpayCredentials();
     const razorpay = getRazorpayClient();
-    if (!razorpay) {
-      return res.status(500).json({
+    if (!razorpay || !configured) {
+      return res.status(503).json({
         success: false,
-        message: 'Razorpay credentials not configured',
+        message:
+          'Razorpay is not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in backend/.env (from https://dashboard.razorpay.com/app/keys).',
       });
     }
 
     const totalAmount = parseFloat(amount);
     const amountInPaise = toRazorpayPaise(totalAmount);
 
-    if (amountInPaise <= 0) {
+    // Razorpay minimum is typically 100 paise (₹1)
+    if (amountInPaise < 100) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid amount for Razorpay payment',
+        message: 'Order total must be at least ₹1.00 for Razorpay',
       });
     }
+
+    // Receipt: alphanumeric + limited special chars, max 40
+    const receipt = String(purchase_order_id)
+      .replace(/[^a-zA-Z0-9_-]/g, '')
+      .slice(0, 40) || `ord_${Date.now()}`;
 
     const razorpayOrder = await razorpay.orders.create({
       amount: amountInPaise,
       currency: 'INR',
-      receipt: String(purchase_order_id).slice(0, 40),
+      receipt,
       payment_capture: 1,
+      notes: {
+        purchase_order_id: String(purchase_order_id),
+      },
     });
 
     const userIdFromToken = getUserIdFromRequest(req);
@@ -589,6 +629,14 @@ const initiateRazorpayPayment = async (req, res) => {
     const legacyToken = generatePaymentToken();
 
     try {
+      // Ensure razorpay_order_id column exists before insert
+      const pool = getPgPool();
+      if (pool) {
+        await pool
+          .query(`ALTER TABLE pending_payments ADD COLUMN IF NOT EXISTS razorpay_order_id TEXT;`)
+          .catch(() => {});
+      }
+
       await createPendingPayment({
         purchaseOrderId: purchase_order_id,
         amount: totalAmount,
@@ -600,14 +648,18 @@ const initiateRazorpayPayment = async (req, res) => {
         razorpayOrderId: razorpayOrder.id,
       });
     } catch (persistErr) {
-      console.warn('[Razorpay Initiate] Failed to persist pending payment (proceeding):', persistErr.message);
+      console.error(
+        '[Razorpay Initiate] Failed to persist pending payment:',
+        persistErr.message
+      );
+      // Still return order — verify can use JWT; log for ops
     }
 
     return res.json({
       success: true,
       message: 'Razorpay payment initiated',
       data: {
-        key_id: process.env.RAZORPAY_KEY_ID,
+        key_id: keyId,
         razorpay_order_id: razorpayOrder.id,
         amount: amountInPaise,
         currency: razorpayOrder.currency || 'INR',
@@ -616,31 +668,53 @@ const initiateRazorpayPayment = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('[Razorpay Initiate] Error:', error.message);
+    console.error('[Razorpay Initiate] Error:', error.message, error.error || '');
+    const rzpMessage =
+      error?.error?.description ||
+      error?.error?.reason ||
+      error.message ||
+      'Failed to initiate Razorpay payment';
     return res.status(500).json({
       success: false,
-      message: 'Failed to initiate Razorpay payment',
-      error: process.env.NODE_ENV === 'development' ? (error.message || error.toString()) : undefined,
+      message: rzpMessage,
+      error:
+        process.env.NODE_ENV === 'development'
+          ? error.message || error.toString()
+          : undefined,
     });
   }
 };
 
+// ==================== PUBLIC RAZORPAY CONFIG (key id only — never secret) ====================
+const getRazorpayConfig = (req, res) => {
+  const { keyId, configured } = getRazorpayCredentials();
+  res.json({
+    success: true,
+    data: {
+      enabled: configured,
+      key_id: configured ? keyId : null,
+      currency: 'INR',
+      name: 'AAOMS CARE',
+    },
+  });
+};
+
 // ==================== GET PAYMENT METHODS ====================
 const getPaymentMethods = (req, res) => {
-  const razorpayConfigured = !!(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET);
+  const { configured } = getRazorpayCredentials();
 
   const methods = [
     {
       id: 'razorpay',
       name: 'Razorpay',
       description: 'Pay securely with UPI, cards, netbanking & wallets',
-      enabled: razorpayConfigured,
+      enabled: configured,
     },
   ];
 
   res.json({
     success: true,
-    data: methods
+    data: methods,
   });
 };
 
@@ -734,8 +808,10 @@ const getAdminRevenueSummary = async (req, res) => {
 // ==================== EXPORTS ====================
 module.exports = {
   getPaymentMethods,
+  getRazorpayConfig,
   verifyRazorpayPayment,
   initiateRazorpayPayment,
   getAdminRevenueSummary,
   getAdminPayments,
+  getRazorpayCredentials,
 };

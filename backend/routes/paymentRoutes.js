@@ -7,6 +7,8 @@ const { protect, adminOnly } = require('../middleware/roleMiddleware');
 // ==================== PUBLIC ROUTES ====================
 
 router.get('/methods', paymentController.getPaymentMethods);
+// Public config (Key ID only — Key Secret never leaves the server)
+router.get('/razorpay/config', paymentController.getRazorpayConfig);
 router.post('/razorpay/verify', paymentController.verifyRazorpayPayment);
 router.post('/razorpay/create-order', paymentController.initiateRazorpayPayment);
 

@@ -83,6 +83,7 @@ class PostgresDatabase {
     aliasAndStrip('purchase_order_id', 'purchaseOrderId');
     aliasAndStrip('payment_token', 'paymentToken');
     aliasAndStrip('payment_jwt', 'paymentJwt');
+    aliasAndStrip('razorpay_order_id', 'razorpayOrderId');
     aliasAndStrip('payment_gateway', 'paymentGateway');
     aliasAndStrip('tracking_number', 'trackingNumber');
     aliasAndStrip('created_at', 'createdAt');
@@ -186,6 +187,7 @@ class PostgresDatabase {
       if (key === 'purchaseOrderId') col = 'purchase_order_id';
       if (key === 'paymentToken') col = 'payment_token';
       if (key === 'paymentJwt') col = 'payment_jwt';
+      if (key === 'razorpayOrderId') col = 'razorpay_order_id';
       if (key === 'paymentGateway') col = 'payment_gateway';
       if (key === 'trackingNumber') col = 'tracking_number';
       if (key === 'shippingAddress') col = 'shipping_address';
@@ -387,6 +389,7 @@ class PostgresDatabase {
       if (key === 'purchaseOrderId') col = 'purchase_order_id';
       if (key === 'paymentToken') col = 'payment_token';
       if (key === 'paymentJwt') col = 'payment_jwt';
+      if (key === 'razorpayOrderId') col = 'razorpay_order_id';
       if (key === 'paymentGateway') col = 'payment_gateway';
       if (key === 'trackingNumber') col = 'tracking_number';
       if (key === 'shippingAddress') col = 'shipping_address';
@@ -491,6 +494,7 @@ class PostgresDatabase {
     if (field === 'purchaseOrderId') col = 'purchase_order_id';
     if (field === 'paymentToken') col = 'payment_token';
     if (field === 'paymentJwt') col = 'payment_jwt';
+    if (field === 'razorpayOrderId') col = 'razorpay_order_id';
     if (field === 'paymentGateway') col = 'payment_gateway';
     if (field === 'trackingNumber') col = 'tracking_number';
     if (field === 'isActive') col = 'is_active';
