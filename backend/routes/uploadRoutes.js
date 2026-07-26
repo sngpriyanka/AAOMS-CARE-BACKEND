@@ -1,61 +1,69 @@
 /**
- * Upload Routes
- * Product images → local disk (uploads/products)
- * Other media may still use Cloudinary memory upload until migrated
+ * Upload Routes — all media → local HostingRaja disk (UPLOADS_DIR)
+ * Cloudinary is not used.
  */
 
 const express = require('express');
 const router = express.Router();
-const { upload } = require('../utils/cloudinaryConfig');
-const { createUploader } = require('../utils/localUpload');
+const { createUploader, setUploadFolder } = require('../utils/localUpload');
 const { protect, adminOnly } = require('../middleware/roleMiddleware');
 const uploadController = require('../controllers/uploadController');
 
-// Local disk multer for product images (HostingRaja / self-hosted)
-const productImageUpload = createUploader('products', { maxSizeMb: 10 });
-
-// ==================== PUBLIC UPLOAD ROUTES ====================
+const productImages = createUploader('products', { maxSizeMb: 10, imagesOnly: true });
+const profileImages = createUploader('profile', { maxSizeMb: 5, imagesOnly: true });
+const productVideos = createUploader('videos', { maxSizeMb: 100, videosOnly: true });
+const bannerImages = createUploader('banners', { maxSizeMb: 10, imagesOnly: true });
+const testimonialImages = createUploader('testimonials', {
+  maxSizeMb: 5,
+  imagesOnly: true,
+});
+// Generic: images/videos/pdf → gallery (videos route uses videos folder when dedicated)
+const genericFiles = createUploader('gallery', { maxSizeMb: 50 });
 
 /**
  * POST /api/upload/file
- * Upload generic file (image or video) — Cloudinary (legacy)
+ * Generic gallery upload (reviews, misc)
  */
-router.post('/file', upload.single('file'), uploadController.uploadFile);
+router.post(
+  '/file',
+  setUploadFolder('gallery'),
+  genericFiles.single('file'),
+  uploadController.uploadFile
+);
 
 /**
  * POST /api/upload/product-image
- * Single product image → local uploads/products
  */
 router.post(
   '/product-image',
   protect,
   adminOnly,
-  productImageUpload.single('file'),
+  setUploadFolder('products'),
+  productImages.single('file'),
   uploadController.uploadProductImage
 );
 
 /**
  * POST /api/upload/product-images
- * Multiple product images → local uploads/products
- * Field name: files (matches ManageProducts FormData)
  */
 router.post(
   '/product-images',
   protect,
   adminOnly,
-  productImageUpload.array('files', 10),
+  setUploadFolder('products'),
+  productImages.array('files', 10),
   uploadController.uploadProductImages
 );
 
 /**
  * POST /api/upload/product-video
- * Product video (Cloudinary until video migration)
  */
 router.post(
   '/product-video',
   protect,
   adminOnly,
-  upload.single('file'),
+  setUploadFolder('videos'),
+  productVideos.single('file'),
   uploadController.uploadProductVideo
 );
 
@@ -66,7 +74,8 @@ router.post(
   '/banner',
   protect,
   adminOnly,
-  upload.single('file'),
+  setUploadFolder('banners'),
+  bannerImages.single('file'),
   uploadController.uploadBanner
 );
 
@@ -77,7 +86,8 @@ router.post(
   '/banners',
   protect,
   adminOnly,
-  upload.array('files', 10),
+  setUploadFolder('banners'),
+  bannerImages.array('files', 10),
   uploadController.uploadBanners
 );
 
@@ -88,7 +98,8 @@ router.post(
   '/testimonial',
   protect,
   adminOnly,
-  upload.single('file'),
+  setUploadFolder('testimonials'),
+  testimonialImages.single('file'),
   uploadController.uploadTestimonialImage
 );
 
@@ -98,13 +109,14 @@ router.post(
 router.post(
   '/profile-picture',
   protect,
-  upload.single('file'),
+  setUploadFolder('profile'),
+  profileImages.single('file'),
   uploadController.uploadProfilePicture
 );
 
 /**
  * DELETE /api/upload/file-by-path
- * Prefer body { path: "/uploads/products/..." } for local files
+ * body: { path: "/uploads/products/..." }
  */
 router.delete(
   '/file-by-path',
@@ -115,7 +127,7 @@ router.delete(
 
 /**
  * DELETE /api/upload/:publicId
- * Local path (URL-encoded) or Cloudinary public id
+ * URL-encoded local path
  */
 router.delete('/:publicId', protect, adminOnly, uploadController.deleteFile);
 

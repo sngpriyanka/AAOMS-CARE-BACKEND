@@ -1,54 +1,238 @@
 /**
- * Upload Controller
- * Handles file uploads for products, users, and other resources
- *
- * Product images: local disk under uploads/products (HostingRaja / self-host).
- * Other media may still use Cloudinary until migrated.
+ * Upload Controller — local disk only (HostingRaja ~/aaoms-data/uploads/...)
+ * Cloudinary is disabled. All uploads write to UPLOADS_DIR subfolders.
+ * PostgreSQL should store data.path (relative /uploads/...).
  */
 
-const {
-  uploadToCloudinary,
-  uploadMultipleToCloudinary,
-  deleteFromCloudinary
-} = require('../utils/cloudinaryConfig');
 const {
   fileToUploadResult,
   deleteLocalFile,
   isLocalUploadPath,
+  normalizeFolderKey,
 } = require('../utils/localUpload');
 
-const PRODUCT_FOLDER = 'products';
+function singleFileResponse(req, res, folder, message) {
+  if (!req.file) {
+    return res.status(400).json({
+      success: false,
+      message: 'No file provided',
+    });
+  }
 
-// ==================== UPLOAD PRODUCT IMAGES (LOCAL DISK) ====================
-/**
- * Upload single product image to server uploads/products
- * POST /api/upload/product-image
- * Requires: file in request (multer disk storage)
- * Stores relative path in DB later: /uploads/products/<filename>
- */
+  const data = fileToUploadResult(req.file, folder, req);
+  return res.json({
+    success: true,
+    message,
+    data: {
+      url: data.url,
+      path: data.path,
+      publicId: data.publicId,
+      fileName: data.fileName,
+      size: data.size,
+      format: data.format,
+      folder: data.folder,
+      mimetype: data.mimetype,
+    },
+  });
+}
+
+function multiFileResponse(req, res, folder, message, imagesOnly = false) {
+  if (!req.files || req.files.length === 0) {
+    return res.status(400).json({
+      success: false,
+      message: 'No files provided',
+    });
+  }
+
+  const accepted = [];
+  for (const file of req.files) {
+    if (imagesOnly && !String(file.mimetype || '').startsWith('image/')) {
+      deleteLocalFile(
+        `/uploads/${normalizeFolderKey(folder)}/${file.filename}`
+      );
+      continue;
+    }
+    accepted.push(fileToUploadResult(file, folder, req));
+  }
+
+  if (accepted.length === 0) {
+    return res.status(400).json({
+      success: false,
+      message: 'No valid files provided',
+    });
+  }
+
+  return res.json({
+    success: true,
+    message,
+    data: accepted.map((result) => ({
+      url: result.url,
+      path: result.path,
+      publicId: result.publicId,
+      size: result.size,
+      format: result.format,
+      fileName: result.fileName,
+      folder: result.folder,
+    })),
+  });
+}
+
+// ==================== PRODUCT IMAGES (local HostingRaja disk) ====================
+// Files: UPLOADS_DIR/products/<filename>
+// API returns path=/uploads/products/...  → store path in PostgreSQL only
 const uploadProductImage = async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({
         success: false,
-        message: 'No file provided'
+        message: 'No file provided',
       });
     }
-
     if (!String(req.file.mimetype || '').startsWith('image/')) {
-      // Remove accidental non-image if multer allowed it
-      deleteLocalFile(`/uploads/${PRODUCT_FOLDER}/${req.file.filename}`);
+      deleteLocalFile(`/uploads/products/${req.file.filename}`);
       return res.status(400).json({
         success: false,
-        message: 'Only image files are allowed for product images'
+        message: 'Only image files are allowed for product images',
       });
     }
 
-    const data = fileToUploadResult(req.file, PRODUCT_FOLDER, req);
+    const data = fileToUploadResult(req.file, 'products', req);
+    console.log(
+      `[upload] Product image saved → disk: ${data.diskPath} | path(for DB): ${data.path}`
+    );
 
-    res.json({
+    return res.json({
       success: true,
       message: 'Product image uploaded successfully',
+      data: {
+        // Prefer path for PostgreSQL; url for immediate display
+        path: data.path,
+        url: data.url,
+        publicId: data.path,
+        fileName: data.fileName,
+        size: data.size,
+        format: data.format,
+        folder: 'products',
+      },
+    });
+  } catch (error) {
+    console.error('Error uploading product image:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error uploading image',
+      error: error.message,
+    });
+  }
+};
+
+const uploadProductImages = async (req, res) => {
+  try {
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No files provided',
+      });
+    }
+
+    const accepted = [];
+    for (const file of req.files) {
+      if (!String(file.mimetype || '').startsWith('image/')) {
+        deleteLocalFile(`/uploads/products/${file.filename}`);
+        continue;
+      }
+      const data = fileToUploadResult(file, 'products', req);
+      console.log(
+        `[upload] Product image saved → disk: ${data.diskPath} | path(for DB): ${data.path}`
+      );
+      accepted.push({
+        path: data.path,
+        url: data.url,
+        publicId: data.path,
+        size: data.size,
+        format: data.format,
+        fileName: data.fileName,
+        folder: 'products',
+      });
+    }
+
+    if (accepted.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No valid image files provided',
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: 'Product images uploaded successfully',
+      data: accepted,
+    });
+  } catch (error) {
+    console.error('Error uploading product images:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error uploading images',
+      error: error.message,
+    });
+  }
+};
+
+// ==================== PROFILE PICTURE ====================
+const uploadProfilePicture = async (req, res) => {
+  try {
+    const userId = req.user?.id || req.body.userId;
+    if (!userId) {
+      if (req.file) {
+        deleteLocalFile(`/uploads/profile/${req.file.filename}`);
+      }
+      return res.status(400).json({
+        success: false,
+        message: 'User ID required',
+      });
+    }
+    if (req.file && !String(req.file.mimetype || '').startsWith('image/')) {
+      deleteLocalFile(`/uploads/profile/${req.file.filename}`);
+      return res.status(400).json({
+        success: false,
+        message: 'Only image files are allowed for profile pictures',
+      });
+    }
+    return singleFileResponse(
+      req,
+      res,
+      'profile',
+      'Profile picture uploaded successfully'
+    );
+  } catch (error) {
+    console.error('Error uploading profile picture:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error uploading profile picture',
+      error: error.message,
+    });
+  }
+};
+
+// ==================== PRODUCT VIDEO ====================
+const uploadProductVideo = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'No file provided',
+      });
+    }
+    if (!String(req.file.mimetype || '').startsWith('video/')) {
+      deleteLocalFile(`/uploads/videos/${req.file.filename}`);
+      return res.status(400).json({
+        success: false,
+        message: 'Only video files are allowed',
+      });
+    }
+    const data = fileToUploadResult(req.file, 'videos', req);
+    return res.json({
+      success: true,
+      message: 'Product video uploaded successfully',
       data: {
         url: data.url,
         path: data.path,
@@ -56,349 +240,143 @@ const uploadProductImage = async (req, res) => {
         fileName: data.fileName,
         size: data.size,
         format: data.format,
-      }
-    });
-  } catch (error) {
-    console.error('Error uploading product image:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error uploading image',
-      error: error.message
-    });
-  }
-};
-
-// ==================== UPLOAD MULTIPLE PRODUCT IMAGES (LOCAL DISK) ====================
-/**
- * Upload multiple product images to server uploads/products
- * POST /api/upload/product-images
- * Requires: files in request (field name: files)
- */
-const uploadProductImages = async (req, res) => {
-  try {
-    if (!req.files || req.files.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'No files provided'
-      });
-    }
-
-    const accepted = [];
-    for (const file of req.files) {
-      if (!String(file.mimetype || '').startsWith('image/')) {
-        deleteLocalFile(`/uploads/${PRODUCT_FOLDER}/${file.filename}`);
-        continue;
-      }
-      accepted.push(fileToUploadResult(file, PRODUCT_FOLDER, req));
-    }
-
-    if (accepted.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'No valid image files provided'
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Product images uploaded successfully',
-      data: accepted.map((result) => ({
-        url: result.url,
-        path: result.path,
-        publicId: result.publicId,
-        size: result.size,
-        format: result.format,
-        fileName: result.fileName,
-      }))
-    });
-  } catch (error) {
-    console.error('Error uploading product images:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error uploading images',
-      error: error.message
-    });
-  }
-};
-
-// ==================== UPLOAD USER PROFILE PICTURE ====================
-/**
- * Upload user profile picture
- * POST /api/upload/profile-picture
- * Requires: file in request, user authentication
- */
-const uploadProfilePicture = async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        message: 'No file provided'
-      });
-    }
-
-    const userId = req.user?.id || req.body.userId;
-    if (!userId) {
-      return res.status(400).json({
-        success: false,
-        message: 'User ID required'
-      });
-    }
-
-    const result = await uploadToCloudinary(
-      req.file.buffer,
-      `profile-${userId}`,
-      'aaxoms/profiles',
-      'image'
-    );
-
-    res.json({
-      success: true,
-      message: 'Profile picture uploaded successfully',
-      data: {
-        url: result.secure_url,
-        publicId: result.public_id,
-        fileName: req.file.originalname,
-        size: result.bytes
-      }
-    });
-  } catch (error) {
-    console.error('Error uploading profile picture:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error uploading profile picture',
-      error: error.message
-    });
-  }
-};
-
-// ==================== UPLOAD PRODUCT VIDEO ====================
-/**
- * Upload product video
- * POST /api/upload/product-video
- * Requires: file in request (video)
- */
-const uploadProductVideo = async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        message: 'No file provided'
-      });
-    }
-
-    // Check if file is video
-    if (!req.file.mimetype.startsWith('video/')) {
-      return res.status(400).json({
-        success: false,
-        message: 'Only video files are allowed'
-      });
-    }
-
-    const result = await uploadToCloudinary(
-      req.file.buffer,
-      `video-${Date.now()}`,
-      'aaxoms/videos',
-      'video'
-    );
-
-    res.json({
-      success: true,
-      message: 'Product video uploaded successfully',
-      data: {
-        url: result.secure_url,
-        publicId: result.public_id,
-        fileName: req.file.originalname,
-        duration: result.duration,
-        size: result.bytes,
-        format: result.format
-      }
+        folder: data.folder,
+      },
     });
   } catch (error) {
     console.error('Error uploading product video:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Error uploading video',
-      error: error.message
+      error: error.message,
     });
   }
 };
 
-// ==================== UPLOAD BANNER IMAGE ====================
-/**
- * Upload banner image (for home page, categories, etc.)
- * POST /api/upload/banner
- * Requires: file in request
- */
+// ==================== BANNER ====================
 const uploadBanner = async (req, res) => {
   try {
-    if (!req.file) {
+    if (req.file && !String(req.file.mimetype || '').startsWith('image/')) {
+      deleteLocalFile(`/uploads/banners/${req.file.filename}`);
       return res.status(400).json({
         success: false,
-        message: 'No file provided'
+        message: 'Only image files are allowed for banners',
       });
     }
-
-    const result = await uploadToCloudinary(
-      req.file.buffer,
-      `banner-${Date.now()}`,
-      'aaxoms/banners',
-      'image'
-    );
-
-    res.json({
-      success: true,
-      message: 'Banner uploaded successfully',
-      data: {
-        url: result.secure_url,
-        publicId: result.public_id,
-        fileName: req.file.originalname,
-        size: result.bytes
-      }
-    });
+    return singleFileResponse(req, res, 'banners', 'Banner uploaded successfully');
   } catch (error) {
     console.error('Error uploading banner:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Error uploading banner',
-      error: error.message
+      error: error.message,
     });
   }
 };
 
-// ==================== UPLOAD MULTIPLE BANNER IMAGES ====================
-/**
- * Upload multiple banner images
- * POST /api/upload/banners
- * Requires: files in request (multiple)
- */
 const uploadBanners = async (req, res) => {
   try {
-    if (!req.files || req.files.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'No files provided'
-      });
-    }
-
-    const results = await uploadMultipleToCloudinary(req.files, 'aaxoms/banners');
-
-    res.json({
-      success: true,
-      message: 'Banner images uploaded successfully',
-      data: results.map(result => ({
-        url: result.secure_url,
-        publicId: result.public_id,
-        size: result.bytes,
-        format: result.format
-      }))
-    });
+    return multiFileResponse(
+      req,
+      res,
+      'banners',
+      'Banner images uploaded successfully',
+      true
+    );
   } catch (error) {
     console.error('Error uploading banner images:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Error uploading banner images',
-      error: error.message
+      error: error.message,
     });
   }
 };
 
-// ==================== UPLOAD TESTIMONIAL IMAGE ====================
-/**
- * Upload testimonial image
- * POST /api/upload/testimonial
- * Requires: file in request
- */
+// ==================== TESTIMONIAL ====================
 const uploadTestimonialImage = async (req, res) => {
   try {
-    if (!req.file) {
+    if (req.file && !String(req.file.mimetype || '').startsWith('image/')) {
+      deleteLocalFile(`/uploads/testimonials/${req.file.filename}`);
       return res.status(400).json({
         success: false,
-        message: 'No file provided'
+        message: 'Only image files are allowed for testimonials',
       });
     }
-
-    const result = await uploadToCloudinary(
-      req.file.buffer,
-      `testimonial-${Date.now()}`,
-      'aaxoms/testimonials',
-      'image'
+    return singleFileResponse(
+      req,
+      res,
+      'testimonials',
+      'Testimonial image uploaded successfully'
     );
-
-    res.json({
-      success: true,
-      message: 'Testimonial image uploaded successfully',
-      data: {
-        url: result.secure_url,
-        publicId: result.public_id,
-        fileName: req.file.originalname,
-        size: result.bytes
-      }
-    });
   } catch (error) {
     console.error('Error uploading testimonial image:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Error uploading testimonial image',
-      error: error.message
+      error: error.message,
     });
   }
 };
 
-// ==================== UPLOAD GENERIC FILE ====================
+// ==================== GENERIC FILE (gallery / documents) ====================
 /**
- * Upload any image or video (generic endpoint)
  * POST /api/upload/file
- * Requires: file in request
- * Optional: folder (default: aaxoms)
+ * Images → gallery, videos → videos, pdf → documents
+ * Optional body.folder ignored for destination reliability with multipart;
+ * use dedicated endpoints when possible.
  */
 const uploadFile = async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({
         success: false,
-        message: 'No file provided'
+        message: 'No file provided',
       });
     }
 
-    const folder = req.body.folder || 'aaxoms/files';
-    const resourceType = req.file.mimetype.startsWith('video/') ? 'video' : 'image';
+    let folder = 'gallery';
+    if (String(req.file.mimetype || '').startsWith('video/')) {
+      folder = 'videos';
+    } else if (req.file.mimetype === 'application/pdf') {
+      folder = 'documents';
+    } else if (String(req.file.mimetype || '').startsWith('image/')) {
+      folder = 'gallery';
+    }
 
-    const result = await uploadToCloudinary(
-      req.file.buffer,
-      `file-${Date.now()}`,
-      folder,
-      resourceType
-    );
+    // File was already written by multer into the route's configured folder
+    // (gallery by default). Report the folder that was actually used.
+    const usedFolder =
+      req.localUploadFolder || req.uploadFolder || folder;
 
-    res.json({
+    const data = fileToUploadResult(req.file, usedFolder, req);
+    return res.json({
       success: true,
       message: 'File uploaded successfully',
       data: {
-        url: result.secure_url,
-        publicId: result.public_id,
-        fileName: req.file.originalname,
-        resourceType: resourceType,
-        size: result.bytes,
-        format: result.format
-      }
+        url: data.url,
+        path: data.path,
+        publicId: data.publicId,
+        fileName: data.fileName,
+        resourceType: String(req.file.mimetype || '').startsWith('video/')
+          ? 'video'
+          : 'image',
+        size: data.size,
+        format: data.format,
+        folder: data.folder,
+      },
     });
   } catch (error) {
     console.error('Error uploading file:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Error uploading file',
-      error: error.message
+      error: error.message,
     });
   }
 };
 
-// ==================== DELETE FILE ====================
-/**
- * Delete file from local uploads (product images) or Cloudinary (legacy)
- * DELETE /api/upload/:publicId
- * publicId may be URL-encoded local path e.g. %2Fuploads%2Fproducts%2Fxxx.jpg
- * Body alternative: { path: "/uploads/products/xxx.jpg" }
- */
+// ==================== DELETE FILE (local only) ====================
 const deleteFile = async (req, res) => {
   try {
     const raw =
@@ -409,35 +387,36 @@ const deleteFile = async (req, res) => {
     if (!raw) {
       return res.status(400).json({
         success: false,
-        message: 'File path or public ID required'
+        message: 'File path required',
       });
     }
 
-    // Local product (or other) uploads
-    if (isLocalUploadPath(raw) || raw.startsWith('uploads/')) {
-      const pathValue = raw.startsWith('uploads/') ? `/${raw}` : raw;
-      const deleted = deleteLocalFile(pathValue);
+    const pathValue = raw.startsWith('uploads/') ? `/${raw}` : raw;
+
+    if (!isLocalUploadPath(pathValue) && !pathValue.startsWith('/uploads/')) {
+      // Ignore legacy Cloudinary public IDs — nothing to delete on disk
       return res.json({
         success: true,
-        message: deleted ? 'Local file deleted successfully' : 'File not found (already removed)',
-        data: { path: pathValue, deleted }
+        message:
+          'Not a local upload path; nothing deleted on server (legacy/external URL)',
+        data: { path: pathValue, deleted: false, skipped: true },
       });
     }
 
-    // Legacy Cloudinary
-    const result = await deleteFromCloudinary(raw);
-
-    res.json({
+    const deleted = deleteLocalFile(pathValue);
+    return res.json({
       success: true,
-      message: 'File deleted successfully',
-      data: result
+      message: deleted
+        ? 'Local file deleted successfully'
+        : 'File not found (already removed)',
+      data: { path: pathValue, deleted },
     });
   } catch (error) {
     console.error('Error deleting file:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Error deleting file',
-      error: error.message
+      error: error.message,
     });
   }
 };
@@ -451,5 +430,5 @@ module.exports = {
   uploadBanners,
   uploadTestimonialImage,
   uploadFile,
-  deleteFile
+  deleteFile,
 };

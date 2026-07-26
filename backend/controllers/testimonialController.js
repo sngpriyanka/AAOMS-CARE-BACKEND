@@ -1,7 +1,25 @@
 const Database = require('../models/DatabaseAdapter');
 const { v4: uuidv4 } = require('uuid');
+const {
+  toStoredMediaPath,
+  expandMediaValue,
+  deleteLocalFile,
+  isLocalUploadPath,
+} = require('../utils/localUpload');
 
 const COLLECTION = 'testimonials';
+
+const expandTestimonialMedia = (item, req) => {
+  if (!item) return item;
+  return {
+    ...item,
+    image: expandMediaValue(item.image, req) || '',
+    publicId:
+      item.publicId && isLocalUploadPath(item.publicId)
+        ? toStoredMediaPath(item.publicId)
+        : item.publicId || '',
+  };
+};
 
 const ensureTestimonialSchema = async () => {
   try {
@@ -56,7 +74,10 @@ exports.getTestimonials = async (req, res) => {
     await ensureTestimonialSchema();
     const items = await Database.readAll(COLLECTION);
     const activeItems = sortTestimonials(items.filter((item) => item.isActive !== false));
-    res.json({ success: true, data: activeItems });
+    res.json({
+      success: true,
+      data: activeItems.map((i) => expandTestimonialMedia(i, req)),
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Error fetching testimonials', error: error.message });
   }
@@ -66,7 +87,10 @@ exports.getAllTestimonials = async (req, res) => {
   try {
     await ensureTestimonialSchema();
     const items = await Database.readAll(COLLECTION);
-    res.json({ success: true, data: sortTestimonials(items) });
+    res.json({
+      success: true,
+      data: sortTestimonials(items).map((i) => expandTestimonialMedia(i, req)),
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Error fetching testimonials', error: error.message });
   }
@@ -78,7 +102,7 @@ exports.getTestimonialById = async (req, res) => {
     if (!item) {
       return res.status(404).json({ success: false, message: 'Testimonial not found' });
     }
-    res.json({ success: true, data: item });
+    res.json({ success: true, data: expandTestimonialMedia(item, req) });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Error fetching testimonial', error: error.message });
   }
@@ -105,6 +129,9 @@ exports.createTestimonial = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Rating must be an integer between 1 and 5' });
     }
 
+    const storedImage = toStoredMediaPath(image || '') || '';
+    const storedPublicId = toStoredMediaPath(publicId || '') || storedImage;
+
     const id = uuidv4();
     const item = await Database.create(COLLECTION, {
       id,
@@ -113,8 +140,8 @@ exports.createTestimonial = async (req, res) => {
       title: title.trim(),
       text: text.trim(),
       rating,
-      image: image || '',
-      publicId: publicId || '',
+      image: storedImage,
+      publicId: storedPublicId || '',
       productId: productId || '',
       sortOrder: Number(sortOrder || 0),
       isActive: isActive !== false,
@@ -122,7 +149,11 @@ exports.createTestimonial = async (req, res) => {
       createdBy: req.user?.id || null,
     });
 
-    res.status(201).json({ success: true, message: 'Testimonial created', data: item });
+    res.status(201).json({
+      success: true,
+      message: 'Testimonial created',
+      data: expandTestimonialMedia(item, req),
+    });
   } catch (error) {
     console.error('createTestimonial error:', error);
     res.status(500).json({ success: false, message: 'Error creating testimonial', error: error.message });
@@ -132,6 +163,11 @@ exports.createTestimonial = async (req, res) => {
 exports.updateTestimonial = async (req, res) => {
   try {
     await ensureTestimonialSchema();
+
+    const existing = await Database.read(COLLECTION, req.params.id);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Testimonial not found' });
+    }
 
     const updates = { ...req.body };
 
@@ -167,6 +203,12 @@ exports.updateTestimonial = async (req, res) => {
     if (updates.isActive !== undefined) {
       updates.isActive = Boolean(updates.isActive);
     }
+    if (updates.image !== undefined) {
+      updates.image = toStoredMediaPath(updates.image) || '';
+    }
+    if (updates.publicId !== undefined) {
+      updates.publicId = toStoredMediaPath(updates.publicId) || updates.image || '';
+    }
 
     updates.updatedAt = new Date().toISOString();
     Object.keys(updates).forEach((key) => updates[key] === undefined && delete updates[key]);
@@ -176,7 +218,22 @@ exports.updateTestimonial = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Testimonial not found' });
     }
 
-    res.json({ success: true, message: 'Testimonial updated', data: item });
+    // Delete previous local image if replaced
+    try {
+      const oldImg = toStoredMediaPath(existing.image || existing.publicId || '');
+      const newImg = toStoredMediaPath(item.image || item.publicId || '');
+      if (oldImg && isLocalUploadPath(oldImg) && oldImg !== newImg) {
+        deleteLocalFile(oldImg);
+      }
+    } catch (e) {
+      console.warn('Testimonial image cleanup warning:', e.message);
+    }
+
+    res.json({
+      success: true,
+      message: 'Testimonial updated',
+      data: expandTestimonialMedia(item, req),
+    });
   } catch (error) {
     console.error('updateTestimonial error:', error);
     res.status(500).json({ success: false, message: 'Error updating testimonial', error: error.message });
@@ -191,6 +248,14 @@ exports.deleteTestimonial = async (req, res) => {
     }
 
     await Database.delete(COLLECTION, req.params.id);
+
+    try {
+      const img = existing.image || existing.publicId;
+      if (img && isLocalUploadPath(img)) deleteLocalFile(img);
+    } catch (e) {
+      console.warn('Testimonial file cleanup warning:', e.message);
+    }
+
     res.json({ success: true, message: 'Testimonial deleted' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Error deleting testimonial', error: error.message });

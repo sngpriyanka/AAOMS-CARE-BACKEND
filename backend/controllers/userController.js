@@ -4,6 +4,12 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { toPhone10, formatIndianPhone } = require('../utils/phoneUtils');
 const { validatePhoneOrEmpty, INDIAN_MOBILE_ERROR } = require('../utils/validators');
+const {
+  toStoredMediaPath,
+  expandMediaValue,
+  deleteLocalFile,
+  isLocalUploadPath,
+} = require('../utils/localUpload');
 
 const USERS_COLLECTION = 'users';
 const ADMINS_COLLECTION = 'admins';
@@ -187,9 +193,15 @@ exports.updateUserProfile = async (req, res) => {
     if (zipcode !== undefined) updates.zipcode = zipcode;
     if (birthday !== undefined) updates.birthday = birthday;
     if (gender !== undefined) updates.gender = gender;
-    // Support both camel and snake for profile pic
-    const pic = profilePicture || profile_picture;
-    if (pic !== undefined) updates.profilePicture = pic;
+    // Support both camel and snake for profile pic — store relative /uploads/profile/... only
+    const pic = profilePicture !== undefined ? profilePicture : profile_picture;
+    if (pic !== undefined) {
+      if (pic === null || pic === '') {
+        updates.profilePicture = null;
+      } else {
+        updates.profilePicture = toStoredMediaPath(pic) || pic;
+      }
+    }
 
     const updated = await Database.update(USERS_COLLECTION, targetUserId, updates);
     if (!updated) {
@@ -199,7 +211,32 @@ exports.updateUserProfile = async (req, res) => {
       });
     }
 
+    // Remove previous local profile image if replaced or cleared
+    if (pic !== undefined) {
+      try {
+        const oldPic = existingUser.profilePicture || existingUser.profile_picture;
+        const newPic = updated.profilePicture || updated.profile_picture || '';
+        const oldStored = toStoredMediaPath(oldPic || '');
+        const newStored = toStoredMediaPath(newPic || '');
+        if (
+          oldStored &&
+          isLocalUploadPath(oldStored) &&
+          oldStored !== newStored
+        ) {
+          deleteLocalFile(oldStored);
+        }
+      } catch (e) {
+        console.warn('Profile picture cleanup warning:', e.message);
+      }
+    }
+
     const { password, ...userWithoutPassword } = updated;
+    if (userWithoutPassword.profilePicture) {
+      userWithoutPassword.profilePicture = expandMediaValue(
+        userWithoutPassword.profilePicture,
+        req
+      );
+    }
     res.json({
       success: true,
       message: 'User profile updated successfully',

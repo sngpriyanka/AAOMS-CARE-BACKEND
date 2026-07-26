@@ -67,11 +67,20 @@ const normalizeProductPayload = (body, existingProduct = null) => {
     ? body.images
     : (body.image ? [body.image] : []);
 
-  // Store only relative /uploads/... paths for local files (not absolute disk paths / not binary)
+  // Store only relative /uploads/... paths in PostgreSQL (never Cloudinary, never binary)
   const images = rawImages
-    .map((img) => toStoredMediaPath(img))
+    .map((img) => {
+      if (img && typeof img === 'object') {
+        return toStoredMediaPath(img.path || img.url || '');
+      }
+      return toStoredMediaPath(img);
+    })
     .filter(Boolean);
-  const image = toStoredMediaPath(body.image || images[0] || '') || images[0] || '';
+  const primaryRaw =
+    (body.image && typeof body.image === 'object'
+      ? body.image.path || body.image.url
+      : body.image) || images[0] || '';
+  const image = toStoredMediaPath(primaryRaw) || images[0] || '';
 
   const description = typeof body.description === 'string'
     ? { tagline: body.description, details: body.description }

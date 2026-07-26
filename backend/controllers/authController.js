@@ -1273,6 +1273,19 @@ exports.getCurrentUser = async (req, res) => {
     // Strip sensitive fields before returning
     const { password, resetToken, ...safeUser } = found;
 
+    // Expand local /uploads profile path for clients
+    try {
+      const { expandMediaValue } = require('../utils/localUpload');
+      if (safeUser.profilePicture) {
+        safeUser.profilePicture = expandMediaValue(safeUser.profilePicture, req);
+      }
+      if (safeUser.profile_picture) {
+        safeUser.profile_picture = expandMediaValue(safeUser.profile_picture, req);
+      }
+    } catch (_) {
+      /* optional */
+    }
+
     res.json({ success: true, user: safeUser });
   } catch (error) {
     console.error('getCurrentUser error:', error);

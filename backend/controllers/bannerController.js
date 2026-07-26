@@ -1,5 +1,13 @@
 const Database = require('../models/DatabaseAdapter');
 const { v4: uuidv4 } = require('uuid');
+const {
+  toStoredMediaPath,
+  expandMediaValue,
+  collectPathsFromFields,
+  cleanupRemovedMedia,
+  deleteLocalFile,
+  isLocalUploadPath,
+} = require('../utils/localUpload');
 
 // Self-healing: ensure critical banner columns exist (for Postgres users who didn't restart after schema updates)
 const ensureBannerSchema = async () => {
@@ -28,13 +36,31 @@ const normalizeBannerImages = (body = {}) => {
   let images = [];
   if (Array.isArray(body.images) && body.images.length) {
     images = body.images
-      .map((img) => (typeof img === 'string' ? img : img?.url))
+      .map((img) => (typeof img === 'string' ? img : img?.url || img?.path))
       .filter(Boolean);
   } else if (body.url) {
     images = [body.url];
   }
-  const url = images[0] || body.url || '';
+  // Store relative /uploads/... paths only for local files
+  images = images.map((img) => toStoredMediaPath(img)).filter(Boolean);
+  const url = images[0] || toStoredMediaPath(body.url || '') || '';
   return { images, url };
+};
+
+const expandBannerMedia = (banner, req) => {
+  if (!banner) return banner;
+  const images = Array.isArray(banner.images)
+    ? banner.images.map((img) => expandMediaValue(img, req)).filter(Boolean)
+    : [];
+  const url = expandMediaValue(banner.url, req) || images[0] || '';
+  return {
+    ...banner,
+    url,
+    images: images.length ? images : url ? [url] : [],
+    publicId: banner.publicId && isLocalUploadPath(banner.publicId)
+      ? toStoredMediaPath(banner.publicId)
+      : banner.publicId || '',
+  };
 };
 
 exports.getBanners = async (req, res) => {
@@ -51,7 +77,10 @@ exports.getBanners = async (req, res) => {
       });
     }
     banners.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-    res.json({ success: true, data: banners });
+    res.json({
+      success: true,
+      data: banners.map((b) => expandBannerMedia(b, req)),
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Error fetching banners', error: error.message });
   }
@@ -87,13 +116,16 @@ exports.createBanner = async (req, res) => {
     if (!pages.length) pages = ['home'];
 
     const id = uuidv4();
+    const storedPublicId = publicId
+      ? toStoredMediaPath(publicId) || publicId
+      : url;
     const banner = await Database.create(COLLECTION, {
       id,
       _id: id,
       name,
       url,
       images,
-      publicId: publicId || '',
+      publicId: storedPublicId || '',
       pages,
       link: link || '/collection',
       title,
@@ -102,7 +134,11 @@ exports.createBanner = async (req, res) => {
       createdAt: new Date().toISOString(),
       createdBy: req.user?.id || null,
     });
-    res.status(201).json({ success: true, message: 'Banner created', data: banner });
+    res.status(201).json({
+      success: true,
+      message: 'Banner created',
+      data: expandBannerMedia(banner, req),
+    });
   } catch (error) {
     console.error('createBanner error:', error); // full details in backend logs
     res.status(500).json({ success: false, message: 'Error creating banner', error: error.message });
@@ -113,10 +149,20 @@ exports.updateBanner = async (req, res) => {
   try {
     await ensureBannerSchema();
 
+    const existing = await Database.read(COLLECTION, req.params.id);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Banner not found' });
+    }
+
     const body = { ...req.body };
     const { images, url } = normalizeBannerImages(body);
     body.images = images;
     body.url = url;
+    if (body.publicId !== undefined) {
+      body.publicId = toStoredMediaPath(body.publicId) || body.publicId || url;
+    } else {
+      body.publicId = url;
+    }
 
     // Same robust pages coercion as create (in case form sent stringified or object pages)
     if (body.pages !== undefined) {
@@ -147,7 +193,21 @@ exports.updateBanner = async (req, res) => {
     if (!banner) {
       return res.status(404).json({ success: false, message: 'Banner not found' });
     }
-    res.json({ success: true, message: 'Banner updated', data: banner });
+
+    // Remove replaced local banner images from disk
+    try {
+      const prev = collectPathsFromFields(existing, ['url', 'images', 'publicId']);
+      const next = collectPathsFromFields(banner, ['url', 'images', 'publicId']);
+      cleanupRemovedMedia(prev, next);
+    } catch (e) {
+      console.warn('Banner image cleanup warning:', e.message);
+    }
+
+    res.json({
+      success: true,
+      message: 'Banner updated',
+      data: expandBannerMedia(banner, req),
+    });
   } catch (error) {
     console.error('updateBanner error:', error);
     res.status(500).json({ success: false, message: 'Error updating banner', error: error.message });
@@ -156,7 +216,19 @@ exports.updateBanner = async (req, res) => {
 
 exports.deleteBanner = async (req, res) => {
   try {
+    const existing = await Database.read(COLLECTION, req.params.id);
     await Database.delete(COLLECTION, req.params.id);
+
+    if (existing) {
+      try {
+        collectPathsFromFields(existing, ['url', 'images', 'publicId']).forEach((p) => {
+          if (isLocalUploadPath(p)) deleteLocalFile(p);
+        });
+      } catch (e) {
+        console.warn('Banner file cleanup warning:', e.message);
+      }
+    }
+
     res.json({ success: true, message: 'Banner deleted' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Error deleting banner', error: error.message });

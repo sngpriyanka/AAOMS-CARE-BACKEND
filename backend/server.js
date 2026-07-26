@@ -118,22 +118,29 @@ app.use(cors({
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
-// ==================== Local product (and other) uploads ====================
-// Serve files from disk: GET /uploads/products/<filename>
-// Must be registered BEFORE the React SPA catch-all below.
+// ==================== Local uploads (Multer disk → HostingRaja / local) ====================
+// UPLOADS_DIR env: ~/aaoms-data/uploads (production) or uploads (local)
+// Served at GET /uploads/... BEFORE React SPA catch-all
 const path = require('path');
-const { UPLOADS_ROOT, ensureUploadTree } = require('./utils/localUpload');
-ensureUploadTree();
+const { UPLOADS_ROOT, ensureUploadTree, DEFAULT_SUBDIRS } = require('./utils/localUpload');
+const uploadsRoot = ensureUploadTree();
 app.use(
   '/uploads',
-  express.static(UPLOADS_ROOT, {
+  express.static(uploadsRoot, {
     maxAge: '7d',
     etag: true,
     index: false,
     fallthrough: true,
   })
 );
-console.log(`📁 Serving local uploads from: ${UPLOADS_ROOT} → /uploads`);
+console.log(`📁 Local uploads root: ${uploadsRoot}`);
+console.log(`   Subfolders: ${DEFAULT_SUBDIRS.join(', ')}`);
+console.log(`   Public URL prefix: /uploads  (BACKEND_PUBLIC_URL=${process.env.BACKEND_PUBLIC_URL || '(request host)'})`);
+if (!process.env.UPLOADS_DIR) {
+  console.warn(
+    '⚠️  UPLOADS_DIR not set — using backend/uploads. On HostingRaja set UPLOADS_DIR=~/aaoms-data/uploads'
+  );
+}
 
 // Performance: cache headers for mostly-static public GET endpoints (products, banners, instagram, reviews, etc.)
 // Short-ish TTLs for freshness while reducing load. Private user data (orders, cart, wishlist) are not cached here.
