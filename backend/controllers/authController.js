@@ -3,9 +3,9 @@ const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const Database = require('../models/DatabaseAdapter');
 const { validateEmail, validatePassword, validatePhoneOrEmpty, INDIAN_MOBILE_ERROR } = require('../utils/validators');
-const { toPhone10, formatIndianPhone } = require('../utils/phoneUtils');
+const { toPhone10, formatIndianPhone, isValidIndianMobile } = require('../utils/phoneUtils');
 const { notify } = require('./notificationController');
-const { sendSms } = require('../utils/sparrowSms');
+const { sendSms, buildOtpMessage } = require('../utils/smsService');
 const { sendSignupOtpEmail } = require('../utils/emailService');
 
 const USERS_COLLECTION = 'users';
@@ -16,6 +16,100 @@ function getLoginTokenExpiry(rememberMe) {
     return process.env.JWT_REMEMBER_EXPIRES_IN || process.env.JWT_EXPIRES_IN || '7d';
   }
   return process.env.JWT_SESSION_EXPIRES_IN || '1d';
+}
+
+/** When true (default), email/password login requires SMS OTP for accounts with a valid Indian mobile. */
+function isLoginOtpEnabled() {
+  return String(process.env.LOGIN_OTP_ENABLED ?? 'true').toLowerCase() !== 'false';
+}
+
+function maskIndianPhone(phone10) {
+  const digits = toPhone10(phone10);
+  if (!digits || digits.length < 4) return '******';
+  return `+91******${digits.slice(-4)}`;
+}
+
+function buildUserPayload(account, collection) {
+  const id = account.id || account._id;
+  const isAdminCollection = collection === ADMINS_COLLECTION;
+  const role = account.role || (isAdminCollection ? 'admin' : 'customer');
+
+  const payload = {
+    id,
+    email: account.email,
+    name: account.name,
+    role,
+    phone: account.phone || '',
+    profilePicture: account.profilePicture || account.profile_picture || null,
+    permissions: Array.isArray(account.permissions) ? account.permissions : [],
+  };
+
+  if (!isAdminCollection) {
+    payload.birthday = account.birthday || null;
+    payload.gender = account.gender || null;
+  }
+
+  return payload;
+}
+
+function issueSessionToken(account, collection, rememberMe) {
+  const userPayload = buildUserPayload(account, collection);
+  const tokenExpiry = getLoginTokenExpiry(!!rememberMe);
+  const token = jwt.sign(
+    { id: userPayload.id, email: userPayload.email, role: userPayload.role },
+    process.env.JWT_SECRET,
+    { expiresIn: tokenExpiry }
+  );
+  return { token, tokenExpiry, user: userPayload };
+}
+
+function createLoginChallengeToken({ accountId, collection, rememberMe, phone10 }) {
+  return jwt.sign(
+    {
+      purpose: 'login-otp',
+      id: accountId,
+      collection,
+      rememberMe: !!rememberMe,
+      phone: phone10,
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: process.env.LOGIN_OTP_CHALLENGE_EXPIRES_IN || '10m' }
+  );
+}
+
+function verifyLoginChallengeToken(token) {
+  const decoded = jwt.verify(token, process.env.JWT_SECRET);
+  if (decoded.purpose !== 'login-otp' || !decoded.id || !decoded.collection || !decoded.phone) {
+    throw new Error('Invalid login challenge');
+  }
+  return decoded;
+}
+
+async function dispatchLoginOtp(phone10, purpose = 'login') {
+  const code = generateOtpCode();
+  const hashedCode = await bcrypt.hash(code, 10);
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+  const storeKey = getOtpStoreKey('phone', `${purpose}:${phone10}`);
+
+  otpStore.set(storeKey, { code: hashedCode, expiresAt, purpose });
+
+  console.log(
+    `\n🔐 [OTP DEBUG - FOR TESTING ONLY] Phone: ${phone10} | Code: ${code} | Purpose: ${purpose} | Expires: ${expiresAt.toISOString()}\n`
+  );
+
+  const message = buildOtpMessage(code);
+  try {
+    await sendSms(phone10, message);
+  } catch (smsErr) {
+    // In development, keep the OTP usable (printed above) even if the SMS gateway URL is wrong.
+    // In production, surface the SMS failure so login does not silently skip verification.
+    const isDev = String(process.env.NODE_ENV || 'development').toLowerCase() !== 'production';
+    if (!isDev) throw smsErr;
+    console.warn(
+      `[SMS OTP] Live SMS send failed (${smsErr.message}). Dev mode: use the OTP printed above.`
+    );
+  }
+  return { storeKey, expiresAt };
 }
 
 function isBcryptHash(value) {
@@ -63,7 +157,14 @@ async function findAccountById(userId) {
 // ==================== SIGNUP ====================
 exports.signup = async (req, res) => {
   try {
-    const { email, password, name, phone, emailVerificationToken } = req.body;
+    const {
+      email,
+      password,
+      name,
+      phone,
+      emailVerificationToken,
+      phoneVerificationToken,
+    } = req.body;
 
     if (!email || !password || !name) {
       return res.status(400).json({
@@ -86,23 +187,80 @@ exports.signup = async (req, res) => {
       });
     }
 
-    // Email OTP verification is required before account creation (phone OTP temporarily disabled for signup).
-    if (!emailVerificationToken) {
+    // Require exactly one successful OTP channel before account creation:
+    // - emailVerificationToken (email OTP path), or
+    // - phoneVerificationToken (mobile OTP path)
+    const hasEmailProof = !!emailVerificationToken;
+    const hasPhoneProof = !!phoneVerificationToken;
+
+    if (!hasEmailProof && !hasPhoneProof) {
       return res.status(400).json({
         success: false,
-        message: 'Email verification via OTP is required before signup. Please verify your email address first.'
+        message: 'OTP verification is required before signup. Please verify via email or mobile number first.'
       });
     }
-    try {
-      const decoded = jwt.verify(emailVerificationToken, process.env.JWT_SECRET);
-      if (decoded.purpose !== 'email-signup' || decoded.email !== email.toLowerCase()) {
-        throw new Error('Email verification token does not match provided email');
-      }
-    } catch (tokenErr) {
+
+    if (hasEmailProof && hasPhoneProof) {
       return res.status(400).json({
         success: false,
-        message: 'Email verification token is invalid or expired. Please verify your email address again.'
+        message: 'Use only one verification method (email or mobile OTP) for signup.'
       });
+    }
+
+    let normalizedPhone = '';
+    let verificationChannel = null;
+
+    if (hasEmailProof) {
+      try {
+        const decoded = jwt.verify(emailVerificationToken, process.env.JWT_SECRET);
+        if (decoded.purpose !== 'email-signup' || decoded.email !== email.toLowerCase()) {
+          throw new Error('Email verification token does not match provided email');
+        }
+        verificationChannel = 'email';
+      } catch (tokenErr) {
+        return res.status(400).json({
+          success: false,
+          message: 'Email verification token is invalid or expired. Please verify your email address again.'
+        });
+      }
+
+      // Optional phone on email-OTP path
+      if (phone) {
+        const phoneCheck = validatePhoneOrEmpty(phone);
+        if (!phoneCheck.valid) {
+          return res.status(400).json({ success: false, message: phoneCheck.message || INDIAN_MOBILE_ERROR });
+        }
+        normalizedPhone = phoneCheck.normalized ? formatIndianPhone(phoneCheck.normalized) : '';
+      }
+    }
+
+    if (hasPhoneProof) {
+      if (!phone) {
+        return res.status(400).json({
+          success: false,
+          message: 'Verified mobile number is required for mobile OTP signup.'
+        });
+      }
+
+      const phoneCheck = validatePhoneOrEmpty(phone);
+      if (!phoneCheck.valid || !phoneCheck.normalized) {
+        return res.status(400).json({ success: false, message: phoneCheck.message || INDIAN_MOBILE_ERROR });
+      }
+      const phone10 = phoneCheck.normalized;
+
+      try {
+        const decoded = jwt.verify(phoneVerificationToken, process.env.JWT_SECRET);
+        if (decoded.purpose !== 'phone-signup' || toPhone10(decoded.phone) !== phone10) {
+          throw new Error('Phone verification token does not match provided mobile number');
+        }
+        verificationChannel = 'mobile';
+        normalizedPhone = formatIndianPhone(phone10);
+      } catch (tokenErr) {
+        return res.status(400).json({
+          success: false,
+          message: 'Mobile verification token is invalid or expired. Please verify your mobile number again.'
+        });
+      }
     }
 
     const existingUser = await Database.findBy(USERS_COLLECTION, 'email', email.toLowerCase());
@@ -115,15 +273,6 @@ exports.signup = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 12);
     const userId = uuidv4();
-
-    let normalizedPhone = '';
-    if (phone) {
-      const phoneCheck = validatePhoneOrEmpty(phone);
-      if (!phoneCheck.valid) {
-        return res.status(400).json({ success: false, message: phoneCheck.message || INDIAN_MOBILE_ERROR });
-      }
-      normalizedPhone = phoneCheck.normalized ? formatIndianPhone(phoneCheck.normalized) : '';
-    }
 
     const newUser = await Database.create(USERS_COLLECTION, {
       id: userId,
@@ -148,7 +297,7 @@ exports.signup = async (req, res) => {
       userId: null,
       type: 'user',
       title: 'New User Registration',
-      message: `${name} (${email}) just created an account.`,
+      message: `${name} (${email}) just created an account via ${verificationChannel || 'otp'} OTP.`,
       link: '/admin/users'
     });
 
@@ -318,10 +467,11 @@ exports.login = async (req, res) => {
     }
 
     const normalizedEmail = email.toLowerCase();
-    const tokenExpiry = getLoginTokenExpiry(!!rememberMe);
+    let account = null;
+    let collection = null;
 
     // === Check Admin Collection (via unified Postgres adapter) ===
-    let admin = await Database.findBy(ADMINS_COLLECTION, 'email', normalizedEmail);
+    const admin = await Database.findBy(ADMINS_COLLECTION, 'email', normalizedEmail);
     if (admin) {
       const passwordMatch = await comparePassword(password, admin.password);
       if (!passwordMatch) {
@@ -330,85 +480,241 @@ exports.login = async (req, res) => {
       if (admin.isActive === false || admin.is_active === false) {
         return res.status(403).json({ success: false, message: 'Account is deactivated.' });
       }
+      account = admin;
+      collection = ADMINS_COLLECTION;
+    } else {
+      // === Check Users Collection ===
+      let user = await Database.findBy(USERS_COLLECTION, 'email', normalizedEmail);
 
-      const adminId = admin.id || admin._id;
-      const token = jwt.sign(
-        { id: adminId, email: admin.email, role: admin.role || 'admin' },
-        process.env.JWT_SECRET,
-        { expiresIn: tokenExpiry }
-      );
+      if (!user) {
+        const allUsers = await Database.readAll(USERS_COLLECTION);
+        user = allUsers.find((u) => u.email === normalizedEmail);
+      }
+
+      if (!user || !user.password) {
+        return res.status(401).json({ success: false, message: 'Invalid email or password' });
+      }
+
+      const passwordMatch = await comparePassword(password, user.password);
+      if (!passwordMatch) {
+        return res.status(401).json({ success: false, message: 'Invalid email or password' });
+      }
+      if (user.isActive === false) {
+        return res.status(403).json({ success: false, message: 'Account is deactivated.' });
+      }
+
+      account = user;
+      collection = USERS_COLLECTION;
+    }
+
+    const phone10 = toPhone10(account.phone);
+    const needsOtp = isLoginOtpEnabled() && isValidIndianMobile(phone10);
+
+    // SMS OTP gate: credentials ok, but session token only after phone OTP verify
+    if (needsOtp) {
+      try {
+        await dispatchLoginOtp(phone10, 'login');
+      } catch (smsErr) {
+        console.error('Login OTP SMS error:', smsErr);
+        return res.status(500).json({
+          success: false,
+          message:
+            smsErr.message &&
+            (smsErr.message.includes('Token') ||
+              smsErr.message.includes('Sender') ||
+              smsErr.message.includes('API') ||
+              smsErr.message.includes('SMS'))
+              ? `Failed to send login OTP: ${smsErr.message}. Check SMS_API_KEY / SMS_SENDER_ID in backend/.env.`
+              : 'Failed to send login OTP. Please try again.',
+        });
+      }
+
+      const accountId = account.id || account._id;
+      const loginChallengeToken = createLoginChallengeToken({
+        accountId,
+        collection,
+        rememberMe: !!rememberMe,
+        phone10,
+      });
 
       return res.json({
         success: true,
-        message: 'Login successful',
-        token,
-        expiresIn: tokenExpiry,
+        requiresOtp: true,
+        message: 'OTP has been sent to your registered mobile number. Please verify to complete sign-in.',
+        loginChallengeToken,
+        maskedPhone: maskIndianPhone(phone10),
         rememberMe: !!rememberMe,
-        user: {
-          id: adminId,
-          email: admin.email,
-          name: admin.name,
-          role: admin.role || 'admin',
-          permissions: Array.isArray(admin.permissions) ? admin.permissions : [],
-          phone: admin.phone || '',
-          profilePicture: admin.profilePicture || admin.profile_picture || null
-        }
       });
     }
 
-    // === Check Users Collection ===
-    let user = await Database.findBy(USERS_COLLECTION, 'email', normalizedEmail);
-    
-    if (!user) {
-      // Fallback: Try reading all users
-      const allUsers = await Database.readAll(USERS_COLLECTION);
-      user = allUsers.find(u => u.email === normalizedEmail);
-    }
-
-    if (!user || !user.password) {
-      return res.status(401).json({ success: false, message: 'Invalid email or password' });
-    }
-
-    const passwordMatch = await comparePassword(password, user.password);
-    if (!passwordMatch) {
-      return res.status(401).json({ success: false, message: 'Invalid email or password' });
-    }
-    if (user.isActive === false) {
-      return res.status(403).json({ success: false, message: 'Account is deactivated.' });
-    }
-
-    const userId = user.id || user._id;
-    const token = jwt.sign(
-      { id: userId, email: user.email, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: tokenExpiry }
+    // No phone / OTP disabled → complete login as before (Google auth & other flows unchanged)
+    const { token, tokenExpiry, user: userPayload } = issueSessionToken(
+      account,
+      collection,
+      !!rememberMe
     );
 
-    res.json({
+    return res.json({
       success: true,
+      requiresOtp: false,
       message: 'Login successful',
       token,
       expiresIn: tokenExpiry,
       rememberMe: !!rememberMe,
-      user: {
-        id: userId,
-        email: user.email,
-        name: user.name,
-        role: user.role,
-        phone: user.phone || '',
-        birthday: user.birthday || null,
-        gender: user.gender || null,
-        profilePicture: user.profilePicture || user.profile_picture || null,
-        permissions: Array.isArray(user.permissions) ? user.permissions : []
-      }
+      user: userPayload,
     });
-
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({
       success: false,
       message: 'Login failed. Please try again.'
     });
+  }
+};
+
+// ==================== LOGIN OTP VERIFY ====================
+exports.verifyLoginOtp = async (req, res) => {
+  try {
+    const { loginChallengeToken, otp } = req.body;
+
+    if (!loginChallengeToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'Login session expired. Please sign in again.',
+      });
+    }
+    if (!otp) {
+      return res.status(400).json({ success: false, message: 'OTP code is required' });
+    }
+
+    let challenge;
+    try {
+      challenge = verifyLoginChallengeToken(loginChallengeToken);
+    } catch (err) {
+      return res.status(400).json({
+        success: false,
+        message: 'Login session expired or invalid. Please sign in again.',
+      });
+    }
+
+    const phone10 = toPhone10(challenge.phone);
+    const storeKey = getOtpStoreKey('phone', `login:${phone10}`);
+    const record = otpStore.get(storeKey);
+
+    if (!record || record.purpose !== 'login') {
+      return res.status(400).json({
+        success: false,
+        message: 'No pending login OTP for this session. Please request a new OTP.',
+      });
+    }
+
+    if (record.expiresAt < new Date()) {
+      otpStore.delete(storeKey);
+      return res.status(400).json({
+        success: false,
+        message: 'OTP has expired. Please request a new one.',
+      });
+    }
+
+    const isMatch = await bcrypt.compare(String(otp), record.code);
+    if (!isMatch) {
+      return res.status(400).json({ success: false, message: 'Invalid OTP code' });
+    }
+
+    otpStore.delete(storeKey);
+
+    const account = await Database.read(challenge.collection, challenge.id);
+    if (!account) {
+      return res.status(404).json({ success: false, message: 'Account not found. Please sign in again.' });
+    }
+
+    if (account.isActive === false || account.is_active === false) {
+      return res.status(403).json({ success: false, message: 'Account is deactivated.' });
+    }
+
+    const { token, tokenExpiry, user: userPayload } = issueSessionToken(
+      account,
+      challenge.collection,
+      !!challenge.rememberMe
+    );
+
+    return res.json({
+      success: true,
+      message: 'Login successful',
+      token,
+      expiresIn: tokenExpiry,
+      rememberMe: !!challenge.rememberMe,
+      user: userPayload,
+    });
+  } catch (error) {
+    console.error('verifyLoginOtp error:', error);
+    res.status(500).json({ success: false, message: 'OTP verification failed. Please try again.' });
+  }
+};
+
+// ==================== LOGIN OTP RESEND ====================
+exports.resendLoginOtp = async (req, res) => {
+  try {
+    const { loginChallengeToken } = req.body;
+
+    if (!loginChallengeToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'Login session expired. Please sign in again.',
+      });
+    }
+
+    let challenge;
+    try {
+      challenge = verifyLoginChallengeToken(loginChallengeToken);
+    } catch (err) {
+      return res.status(400).json({
+        success: false,
+        message: 'Login session expired or invalid. Please sign in again.',
+      });
+    }
+
+    const phone10 = toPhone10(challenge.phone);
+    if (!isValidIndianMobile(phone10)) {
+      return res.status(400).json({ success: false, message: INDIAN_MOBILE_ERROR });
+    }
+
+    // Ensure account still exists / active
+    const account = await Database.read(challenge.collection, challenge.id);
+    if (!account) {
+      return res.status(404).json({ success: false, message: 'Account not found. Please sign in again.' });
+    }
+    if (account.isActive === false || account.is_active === false) {
+      return res.status(403).json({ success: false, message: 'Account is deactivated.' });
+    }
+
+    try {
+      await dispatchLoginOtp(phone10, 'login');
+    } catch (smsErr) {
+      console.error('Resend login OTP SMS error:', smsErr);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to resend OTP. Please try again.',
+      });
+    }
+
+    // Refresh challenge TTL so user has time to enter the new code
+    const refreshedToken = createLoginChallengeToken({
+      accountId: challenge.id,
+      collection: challenge.collection,
+      rememberMe: !!challenge.rememberMe,
+      phone10,
+    });
+
+    return res.json({
+      success: true,
+      message: 'A new OTP has been sent to your registered mobile number.',
+      loginChallengeToken: refreshedToken,
+      maskedPhone: maskIndianPhone(phone10),
+    });
+  } catch (error) {
+    console.error('resendLoginOtp error:', error);
+    res.status(500).json({ success: false, message: 'Failed to resend OTP. Please try again.' });
   }
 };
 
@@ -593,9 +899,13 @@ async function verifyGoogleIdToken(token) {
 }
 
 // ==================== OTP VERIFICATION ====================
-// Signup: email OTP via Gmail (SMTP). Profile phone updates: SMS via Sparrow.
+// Signup: email OTP (SMTP) OR mobile OTP (SMS) — channel selected by client.
+// Login / profile phone: SMS OTP via smsService.
 // Simple in-memory OTP store (for demo; use Redis/DB in production with TTL)
-const otpStore = new Map(); // key -> { code, expiresAt: Date, purpose }
+const otpStore = new Map(); // key -> { code, expiresAt: Date, purpose, channel? }
+
+const OTP_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const SIGNUP_VERIFY_TOKEN_TTL = '15m';
 
 function generateOtpCode() {
   return Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit
@@ -605,76 +915,140 @@ function getOtpStoreKey(type, identifier) {
   return `${type}:${identifier}`;
 }
 
+function normalizeSignupChannel(raw) {
+  const value = String(raw || 'email').toLowerCase().trim();
+  if (value === 'mobile' || value === 'phone' || value === 'sms') return 'mobile';
+  return 'email';
+}
+
 exports.sendOtp = async (req, res) => {
   try {
-    const { phone, email, purpose = 'signup' } = req.body;
-    // reCAPTCHA temporarily disabled
-    // const { recaptchaToken } = req.body;
-    // if (recaptchaToken) {
-    //   console.log('[OTP] reCAPTCHA token received');
-    // }
+    const { phone, email, purpose = 'signup', channel: rawChannel } = req.body;
 
     const code = generateOtpCode();
     const hashedCode = await bcrypt.hash(code, 10);
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + OTP_TTL_MS);
 
-    // Signup flow: email OTP (phone OTP temporarily disabled)
+    // -------- Signup: email OR mobile OTP --------
     if (purpose === 'signup') {
-      if (!email || !validateEmail(email)) {
-        return res.status(400).json({ success: false, message: 'Valid email address is required' });
-      }
+      const channel = normalizeSignupChannel(rawChannel);
 
-      const normalizedEmail = email.toLowerCase().trim();
-      const storeKey = getOtpStoreKey('email', normalizedEmail);
+      if (channel === 'email') {
+        if (!email || !validateEmail(email)) {
+          return res.status(400).json({ success: false, message: 'Valid email address is required' });
+        }
 
-      const existingUser = await Database.findBy(USERS_COLLECTION, 'email', normalizedEmail);
-      if (existingUser) {
-        return res.status(409).json({
-          success: false,
-          message: 'Email already registered. Please log in instead.'
+        const normalizedEmail = email.toLowerCase().trim();
+        const storeKey = getOtpStoreKey('email', `signup:${normalizedEmail}`);
+
+        const existingUser = await Database.findBy(USERS_COLLECTION, 'email', normalizedEmail);
+        if (existingUser) {
+          return res.status(409).json({
+            success: false,
+            message: 'Email already registered. Please log in instead.'
+          });
+        }
+
+        otpStore.set(storeKey, { code: hashedCode, expiresAt, purpose, channel: 'email' });
+
+        console.log(`\n🔐 [OTP DEBUG - FOR TESTING ONLY] Email: ${normalizedEmail} | Code: ${code} | Purpose: signup/email | Expires: ${expiresAt.toISOString()}\n`);
+
+        const emailResult = await sendSignupOtpEmail(normalizedEmail, code);
+        if (emailResult.skipped) {
+          console.warn('[Email OTP] SMTP not configured — OTP logged to console only (dev mode).');
+        } else if (!emailResult.success) {
+          otpStore.delete(storeKey);
+          return res.status(500).json({
+            success: false,
+            message: `Failed to send verification email: ${emailResult.error || 'Unknown error'}. Check SMTP settings in backend/.env.`
+          });
+        }
+
+        return res.json({
+          success: true,
+          channel: 'email',
+          expiresInSeconds: Math.floor(OTP_TTL_MS / 1000),
+          message: 'OTP has been sent to your email address.'
         });
       }
 
-      otpStore.set(storeKey, { code: hashedCode, expiresAt, purpose });
-
-      console.log(`\n🔐 [OTP DEBUG - FOR TESTING ONLY] Email: ${normalizedEmail} | Code: ${code} | Purpose: ${purpose} | Expires: ${expiresAt.toISOString()}\n`);
-
-      const emailResult = await sendSignupOtpEmail(normalizedEmail, code);
-      if (emailResult.skipped) {
-        console.warn('[Email OTP] SMTP not configured — OTP logged to console only (dev mode).');
-      } else if (!emailResult.success) {
-        otpStore.delete(storeKey);
-        return res.status(500).json({
-          success: false,
-          message: `Failed to send verification email: ${emailResult.error || 'Unknown error'}. Check SMTP settings in backend/.env.`
-        });
-      }
-
-      return res.json({
-        success: true,
-        message: 'OTP has been sent to your email address.'
-      });
-    }
-
-    // Profile flow: phone OTP via SMS (unchanged)
-    if (purpose === 'profile') {
+      // channel === 'mobile'
       const phone10 = toPhone10(phone);
-      if (!phone10 || !validatePhoneOrEmpty(phone10).valid) {
+      if (!phone10 || !isValidIndianMobile(phone10)) {
         return res.status(400).json({ success: false, message: INDIAN_MOBILE_ERROR });
       }
 
-      const storeKey = getOtpStoreKey('phone', phone10);
-      otpStore.set(storeKey, { code: hashedCode, expiresAt, purpose });
+      const storeKey = getOtpStoreKey('phone', `signup:${phone10}`);
+      otpStore.set(storeKey, { code: hashedCode, expiresAt, purpose, channel: 'mobile' });
 
-      console.log(`\n🔐 [OTP DEBUG - FOR TESTING ONLY] Phone: ${phone10} | Code: ${code} | Purpose: ${purpose} | Expires: ${expiresAt.toISOString()}\n`);
+      console.log(`\n🔐 [OTP DEBUG - FOR TESTING ONLY] Phone: ${phone10} | Code: ${code} | Purpose: signup/mobile | Expires: ${expiresAt.toISOString()}\n`);
 
-      const message = `Your AAOMS CARE verification code is ${code}. Valid for 5 minutes. Do not share this code with anyone.`;
-      await sendSms(phone10, message);
-      console.log(`[Sparrow SMS] OTP send attempted to ${phone10}`);
+      try {
+        const message = buildOtpMessage(code);
+        await sendSms(phone10, message);
+      } catch (smsErr) {
+        const isDev = String(process.env.NODE_ENV || 'development').toLowerCase() !== 'production';
+        if (!isDev) {
+          otpStore.delete(storeKey);
+          throw smsErr;
+        }
+        console.warn(
+          `[SMS OTP] Signup SMS send failed (${smsErr.message}). Dev mode: use the OTP printed above.`
+        );
+      }
 
       return res.json({
         success: true,
+        channel: 'mobile',
+        maskedPhone: `+91******${phone10.slice(-4)}`,
+        expiresInSeconds: Math.floor(OTP_TTL_MS / 1000),
         message: 'OTP has been sent to your mobile number via SMS.'
+      });
+    }
+
+    // -------- Profile flow: phone OTP via SMS when adding/changing mobile --------
+    if (purpose === 'profile') {
+      const phone10 = toPhone10(phone);
+      if (!phone10 || !isValidIndianMobile(phone10)) {
+        return res.status(400).json({ success: false, message: INDIAN_MOBILE_ERROR });
+      }
+
+      // Prefer purpose-scoped key; also clear any legacy unscoped key for this number
+      const storeKey = getOtpStoreKey('phone', `profile:${phone10}`);
+      const legacyKey = getOtpStoreKey('phone', phone10);
+      otpStore.delete(legacyKey);
+      otpStore.set(storeKey, {
+        code: hashedCode,
+        expiresAt,
+        purpose: 'profile',
+        channel: 'mobile',
+      });
+
+      console.log(
+        `\n🔐 [OTP DEBUG - FOR TESTING ONLY] Phone: ${phone10} | Code: ${code} | Purpose: profile | Expires: ${expiresAt.toISOString()}\n`
+      );
+
+      try {
+        const message = buildOtpMessage(code);
+        await sendSms(phone10, message);
+        console.log(`[SMS OTP] Profile OTP send attempted to ${phone10}`);
+      } catch (smsErr) {
+        const isDev = String(process.env.NODE_ENV || 'development').toLowerCase() !== 'production';
+        if (!isDev) {
+          otpStore.delete(storeKey);
+          throw smsErr;
+        }
+        console.warn(
+          `[SMS OTP] Profile SMS send failed (${smsErr.message}). Dev mode: use the OTP printed above.`
+        );
+      }
+
+      return res.json({
+        success: true,
+        purpose: 'profile',
+        maskedPhone: maskIndianPhone(phone10),
+        expiresInSeconds: Math.floor(OTP_TTL_MS / 1000),
+        message: 'OTP has been sent to your mobile number via SMS.',
       });
     }
 
@@ -684,8 +1058,8 @@ exports.sendOtp = async (req, res) => {
     const errMessage = error.message || 'Failed to send OTP';
     res.status(500).json({
       success: false,
-      message: errMessage.includes('Token') || errMessage.includes('Sender') || errMessage.includes('Credit')
-        ? `SMS delivery failed: ${errMessage}. Check SPARROW_TOKEN and SPARROW_SENDER in backend/.env.`
+      message: errMessage.includes('Token') || errMessage.includes('Sender') || errMessage.includes('Credit') || errMessage.includes('API') || errMessage.includes('SMS')
+        ? `SMS delivery failed: ${errMessage}. Check SMS_API_KEY and SMS_SENDER_ID in backend/.env.`
         : 'Failed to send OTP. Please try again.',
     });
   }
@@ -693,87 +1067,169 @@ exports.sendOtp = async (req, res) => {
 
 exports.verifyOtp = async (req, res) => {
   try {
-    const { phone, email, otp, purpose = 'signup' } = req.body;
+    const { phone, email, otp, purpose = 'signup', channel: rawChannel } = req.body;
 
     if (!otp) {
       return res.status(400).json({ success: false, message: 'OTP code is required' });
     }
 
-    let storeKey;
+    // -------- Signup verify (email or mobile) --------
     if (purpose === 'signup') {
-      if (!email || !validateEmail(email)) {
-        return res.status(400).json({ success: false, message: 'Valid email address is required' });
+      const channel = normalizeSignupChannel(rawChannel || (phone && !email ? 'mobile' : 'email'));
+
+      let storeKey;
+      let entityLabel;
+
+      if (channel === 'email') {
+        if (!email || !validateEmail(email)) {
+          return res.status(400).json({ success: false, message: 'Valid email address is required' });
+        }
+        storeKey = getOtpStoreKey('email', `signup:${email.toLowerCase().trim()}`);
+        entityLabel = 'email address';
+      } else {
+        const phone10 = toPhone10(phone);
+        if (!phone10 || !isValidIndianMobile(phone10)) {
+          return res.status(400).json({ success: false, message: INDIAN_MOBILE_ERROR });
+        }
+        storeKey = getOtpStoreKey('phone', `signup:${phone10}`);
+        entityLabel = 'mobile number';
       }
-      storeKey = getOtpStoreKey('email', email.toLowerCase().trim());
-    } else if (purpose === 'profile') {
-      const phone10 = toPhone10(phone);
-      if (!phone10 || !validatePhoneOrEmpty(phone10).valid) {
-        return res.status(400).json({ success: false, message: INDIAN_MOBILE_ERROR });
+
+      const record = otpStore.get(storeKey);
+
+      if (!record || record.purpose !== 'signup') {
+        return res.status(400).json({
+          success: false,
+          message: `No pending OTP request for this ${entityLabel}. Please request a new OTP.`
+        });
       }
-      storeKey = getOtpStoreKey('phone', phone10);
-    } else {
-      return res.status(400).json({ success: false, message: 'Invalid OTP purpose' });
-    }
 
-    const record = otpStore.get(storeKey);
+      if (record.expiresAt < new Date()) {
+        otpStore.delete(storeKey);
+        return res.status(400).json({ success: false, message: 'OTP has expired. Please request a new one.' });
+      }
 
-    if (!record || record.purpose !== purpose) {
-      const entityLabel = purpose === 'signup' ? 'email address' : 'phone number';
-      return res.status(400).json({ success: false, message: `No pending OTP request for this ${entityLabel}` });
-    }
+      const isMatch = await bcrypt.compare(String(otp), record.code);
+      if (!isMatch) {
+        return res.status(400).json({ success: false, message: 'Invalid OTP code' });
+      }
 
-    if (record.expiresAt < new Date()) {
       otpStore.delete(storeKey);
-      return res.status(400).json({ success: false, message: 'OTP has expired. Please request a new one.' });
-    }
 
-    const isMatch = await bcrypt.compare(String(otp), record.code);
-    if (!isMatch) {
-      return res.status(400).json({ success: false, message: 'Invalid OTP code' });
-    }
+      if (channel === 'email') {
+        const normalizedEmail = email.toLowerCase().trim();
+        const emailVerificationToken = jwt.sign(
+          {
+            email: normalizedEmail,
+            purpose: 'email-signup',
+            verifiedAt: Date.now()
+          },
+          process.env.JWT_SECRET,
+          { expiresIn: SIGNUP_VERIFY_TOKEN_TTL }
+        );
 
-    otpStore.delete(storeKey);
-
-    let emailVerificationToken = null;
-    let phoneVerificationToken = null;
-
-    if (purpose === 'signup') {
-      const normalizedEmail = email.toLowerCase().trim();
-      emailVerificationToken = jwt.sign(
-        {
+        return res.json({
+          success: true,
+          channel: 'email',
+          message: 'Email address verified successfully via OTP.',
           email: normalizedEmail,
-          purpose: 'email-signup',
+          emailVerificationToken
+        });
+      }
+
+      const phone10 = toPhone10(phone);
+      const phoneVerificationToken = jwt.sign(
+        {
+          phone: phone10,
+          purpose: 'phone-signup',
           verifiedAt: Date.now()
         },
         process.env.JWT_SECRET,
-        { expiresIn: '15m' }
+        { expiresIn: SIGNUP_VERIFY_TOKEN_TTL }
       );
 
       return res.json({
         success: true,
-        message: 'Email address verified successfully via OTP.',
-        email: normalizedEmail,
-        emailVerificationToken
+        channel: 'mobile',
+        message: 'Mobile number verified successfully via OTP.',
+        phone: phone10,
+        phoneVerificationToken
       });
     }
 
+    // -------- Profile phone verify (must succeed before profile save) --------
     if (purpose === 'profile') {
       const phone10 = toPhone10(phone);
-      phoneVerificationToken = jwt.sign(
+      if (!phone10 || !isValidIndianMobile(phone10)) {
+        return res.status(400).json({ success: false, message: INDIAN_MOBILE_ERROR });
+      }
+
+      const storeKey = getOtpStoreKey('phone', `profile:${phone10}`);
+      const legacyKey = getOtpStoreKey('phone', phone10);
+      let record = otpStore.get(storeKey);
+      let activeKey = storeKey;
+      if (!record) {
+        // Backward-compatible with OTPs issued before purpose-scoped keys
+        record = otpStore.get(legacyKey);
+        activeKey = legacyKey;
+      }
+
+      if (!record || record.purpose !== 'profile') {
+        return res.status(400).json({
+          success: false,
+          message: 'No pending OTP request for this phone number. Please request a new OTP.',
+        });
+      }
+
+      if (record.expiresAt < new Date()) {
+        otpStore.delete(activeKey);
+        otpStore.delete(storeKey);
+        otpStore.delete(legacyKey);
+        return res.status(400).json({
+          success: false,
+          message: 'OTP has expired. Please request a new one.',
+        });
+      }
+
+      const isMatch = await bcrypt.compare(String(otp).trim(), record.code);
+      if (!isMatch) {
+        return res.status(400).json({ success: false, message: 'Invalid OTP code' });
+      }
+
+      otpStore.delete(activeKey);
+      otpStore.delete(storeKey);
+      otpStore.delete(legacyKey);
+
+      // Optionally bind token to authenticated user when Authorization is present
+      let boundUserId = null;
+      try {
+        const authHeader = req.headers.authorization || req.headers.Authorization;
+        if (authHeader && String(authHeader).startsWith('Bearer ')) {
+          const sessionToken = String(authHeader).slice(7).trim();
+          const session = jwt.verify(sessionToken, process.env.JWT_SECRET);
+          if (session?.id) boundUserId = session.id;
+        }
+      } catch (_) {
+        // Token binding is best-effort; profile update still re-checks phone match
+      }
+
+      const phoneVerificationToken = jwt.sign(
         {
           phone: phone10,
           purpose: 'phone-profile',
-          verifiedAt: Date.now()
+          verifiedAt: Date.now(),
+          ...(boundUserId ? { userId: boundUserId } : {}),
         },
         process.env.JWT_SECRET,
-        { expiresIn: '15m' }
+        { expiresIn: SIGNUP_VERIFY_TOKEN_TTL }
       );
 
       return res.json({
         success: true,
+        purpose: 'profile',
         message: 'Phone number verified successfully via OTP.',
         phone: phone10,
-        phoneVerificationToken
+        phoneVerificationToken,
       });
     }
 

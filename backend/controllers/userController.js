@@ -8,8 +8,9 @@ const { validatePhoneOrEmpty, INDIAN_MOBILE_ERROR } = require('../utils/validato
 const USERS_COLLECTION = 'users';
 const ADMINS_COLLECTION = 'admins';
 
-// Profile phone OTP temporarily disabled — users can add/update phone without SMS verification.
-const PROFILE_PHONE_OTP_ENABLED = false;
+// Require SMS OTP when customer adds or changes their profile mobile number.
+// Admins updating another user's profile via admin tools are not blocked by this.
+const PROFILE_PHONE_OTP_ENABLED = true;
 
 // Get all users (admin only)
 exports.getAllUsers = async (req, res) => {
@@ -140,7 +141,16 @@ exports.updateUserProfile = async (req, res) => {
       const currentPhone10 = toPhone10(existingUser.phone || '');
       const phoneIsChanging = newPhone10 !== currentPhone10;
 
-      if (PROFILE_PHONE_OTP_ENABLED && phoneIsChanging && newPhone10) {
+      // Self-service phone add/change always requires OTP (including admins editing their own account).
+      // Only skip OTP when an admin updates another user's phone via admin tools.
+      const isSelfUpdate = String(targetUserId) === String(req.user.id);
+      const mustVerifyPhoneOtp =
+        PROFILE_PHONE_OTP_ENABLED &&
+        isSelfUpdate &&
+        phoneIsChanging &&
+        !!newPhone10;
+
+      if (mustVerifyPhoneOtp) {
         if (!phoneVerificationToken) {
           return res.status(400).json({
             success: false,
@@ -150,8 +160,16 @@ exports.updateUserProfile = async (req, res) => {
 
         try {
           const decoded = jwt.verify(phoneVerificationToken, process.env.JWT_SECRET);
-          if (decoded.purpose !== 'phone-profile' || decoded.phone !== newPhone10) {
+          const tokenPhone10 = toPhone10(decoded.phone);
+          if (
+            decoded.purpose !== 'phone-profile' ||
+            tokenPhone10 !== newPhone10
+          ) {
             throw new Error('Phone verification token does not match provided phone');
+          }
+          // Optional binding: if token carries userId, it must match the profile owner
+          if (decoded.userId && String(decoded.userId) !== String(targetUserId)) {
+            throw new Error('Phone verification token does not belong to this user');
           }
         } catch (tokenErr) {
           return res.status(400).json({
