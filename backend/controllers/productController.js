@@ -3,10 +3,38 @@ const Database = require('../models/DatabaseAdapter');
 const { validateProductData } = require('../utils/validators');
 const { cascadeProductDeletion } = require('../utils/productCascade');
 const { getMatchingCategories } = require('../utils/categories');
+const {
+  toStoredMediaPath,
+  toPublicUrl,
+  cleanupRemovedProductImages,
+  cleanupAllProductImages,
+} = require('../utils/localUpload');
 const { v4: uuidv4 } = require('uuid');
 const PRODUCTS_COLLECTION = 'products';
 
 const isProductActive = (product) => product && product.isActive !== false;
+
+/** Expand relative /uploads paths to full URLs for API clients (HostingRaja + local). */
+const expandProductMedia = (product, req) => {
+  if (!product) return product;
+  const expand = (value) => {
+    if (!value) return value;
+    return toPublicUrl(toStoredMediaPath(value) || value, req);
+  };
+  const images = Array.isArray(product.images)
+    ? product.images.map(expand).filter(Boolean)
+    : [];
+  const image = expand(product.image) || images[0] || '';
+  return {
+    ...product,
+    image,
+    images: images.length ? images : (image ? [image] : []),
+  };
+};
+
+const expandProductsMedia = (products, req) =>
+  (Array.isArray(products) ? products : []).map((p) => expandProductMedia(p, req));
+
 
 const resolveProduct = async (identifier) => {
   const key = String(identifier || '').trim();
@@ -35,7 +63,16 @@ const buildProductSlug = (body, existingProduct = null) => {
 };
 
 const normalizeProductPayload = (body, existingProduct = null) => {
-  const image = body.image || body.images?.[0] || '';
+  const rawImages = Array.isArray(body.images) && body.images.length
+    ? body.images
+    : (body.image ? [body.image] : []);
+
+  // Store only relative /uploads/... paths for local files (not absolute disk paths / not binary)
+  const images = rawImages
+    .map((img) => toStoredMediaPath(img))
+    .filter(Boolean);
+  const image = toStoredMediaPath(body.image || images[0] || '') || images[0] || '';
+
   const description = typeof body.description === 'string'
     ? { tagline: body.description, details: body.description }
     : (body.description || {});
@@ -53,7 +90,7 @@ const normalizeProductPayload = (body, existingProduct = null) => {
     productInformation: body.productInformation || '',
     category: typeof body.category === 'string' ? body.category.trim() : '',
     image,
-    images: Array.isArray(body.images) && body.images.length ? body.images : (image ? [image] : []),
+    images: images.length ? images : (image ? [image] : []),
     sizes: Array.isArray(body.sizes) ? body.sizes : String(body.sizes || '').split(',').map(s => s.trim()).filter(Boolean),
     colors: Array.isArray(body.colors) ? body.colors : String(body.colors || '').split(',').map(c => c.trim()).filter(Boolean),
     sizeChart: body.sizeChart
@@ -116,7 +153,7 @@ exports.getAllProducts = async (req, res) => {
     if (pgResult) {
       return res.json({
         success: true,
-        data: pgResult.items,
+        data: expandProductsMedia(pgResult.items, req),
         pagination: {
           total: pgResult.total,
           page: pgResult.page,
@@ -134,7 +171,7 @@ exports.getAllProducts = async (req, res) => {
 
     res.json({
       success: true,
-      data: paginatedProducts,
+      data: expandProductsMedia(paginatedProducts, req),
       pagination: {
         total: products.length,
         page: pageNum,
@@ -151,7 +188,7 @@ exports.getAllProducts = async (req, res) => {
   }
 };
 
-const sendResolvedProduct = async (res, identifier) => {
+const sendResolvedProduct = async (req, res, identifier) => {
   const product = await resolveProduct(identifier);
 
   if (!product) {
@@ -163,13 +200,13 @@ const sendResolvedProduct = async (res, identifier) => {
 
   return res.json({
     success: true,
-    data: product
+    data: expandProductMedia(product, req)
   });
 };
 
 exports.getProductByIdentifier = async (req, res) => {
   try {
-    await sendResolvedProduct(res, req.params.identifier);
+    await sendResolvedProduct(req, res, req.params.identifier);
   } catch (error) {
     res.status(500).json({
       success: false,
@@ -181,7 +218,7 @@ exports.getProductByIdentifier = async (req, res) => {
 
 exports.getProductById = async (req, res) => {
   try {
-    await sendResolvedProduct(res, req.params.id);
+    await sendResolvedProduct(req, res, req.params.id);
   } catch (error) {
     res.status(500).json({
       success: false,
@@ -193,7 +230,7 @@ exports.getProductById = async (req, res) => {
 
 exports.getProductBySlug = async (req, res) => {
   try {
-    await sendResolvedProduct(res, req.params.slug);
+    await sendResolvedProduct(req, res, req.params.slug);
   } catch (error) {
     res.status(500).json({
       success: false,
@@ -234,7 +271,7 @@ exports.createProduct = async (req, res) => {
     res.status(201).json({
       success: true,
       message: 'Product created successfully',
-      data: newProduct
+      data: expandProductMedia(newProduct, req)
     });
   } catch (error) {
     res.status(500).json({
@@ -264,8 +301,10 @@ exports.updateProduct = async (req, res) => {
       });
     }
 
+    const payload = normalizeProductPayload(req.body, existingProduct);
+
     const updated = await Database.update(PRODUCTS_COLLECTION, id, {
-      ...normalizeProductPayload(req.body, existingProduct),
+      ...payload,
       updatedAt: new Date().toISOString()
     });
 
@@ -276,10 +315,17 @@ exports.updateProduct = async (req, res) => {
       });
     }
 
+    // After successful DB update, remove replaced/dropped local product images from disk
+    try {
+      cleanupRemovedProductImages(existingProduct, payload.images);
+    } catch (cleanupErr) {
+      console.warn('Product image cleanup warning:', cleanupErr.message);
+    }
+
     res.json({
       success: true,
       message: 'Product updated successfully',
-      data: updated
+      data: expandProductMedia(updated, req)
     });
   } catch (error) {
     res.status(500).json({
@@ -315,6 +361,13 @@ exports.deleteProduct = async (req, res) => {
         success: false,
         message: 'Failed to delete product from database'
       });
+    }
+
+    // Delete local product image files from disk (non-blocking failure)
+    try {
+      cleanupAllProductImages(product);
+    } catch (cleanupErr) {
+      console.warn('Product image file cleanup warning:', cleanupErr.message);
     }
 
     res.json({

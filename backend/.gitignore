@@ -37,6 +37,12 @@ data/*.json
 logs/
 *.log
 
+# ==================== LOCAL UPLOADS (HostingRaja disk storage) ====================
+# Keep folder structure; ignore uploaded binaries
+uploads/**
+!uploads/**/
+!uploads/**/.gitkeep
+
 # ==================== MISC ====================
 .cache/
 .env.*.swp

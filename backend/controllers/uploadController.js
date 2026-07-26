@@ -1,6 +1,9 @@
 /**
  * Upload Controller
  * Handles file uploads for products, users, and other resources
+ *
+ * Product images: local disk under uploads/products (HostingRaja / self-host).
+ * Other media may still use Cloudinary until migrated.
  */
 
 const {
@@ -8,12 +11,20 @@ const {
   uploadMultipleToCloudinary,
   deleteFromCloudinary
 } = require('../utils/cloudinaryConfig');
+const {
+  fileToUploadResult,
+  deleteLocalFile,
+  isLocalUploadPath,
+} = require('../utils/localUpload');
 
-// ==================== UPLOAD PRODUCT IMAGES ====================
+const PRODUCT_FOLDER = 'products';
+
+// ==================== UPLOAD PRODUCT IMAGES (LOCAL DISK) ====================
 /**
- * Upload single product image
+ * Upload single product image to server uploads/products
  * POST /api/upload/product-image
- * Requires: file in request
+ * Requires: file in request (multer disk storage)
+ * Stores relative path in DB later: /uploads/products/<filename>
  */
 const uploadProductImage = async (req, res) => {
   try {
@@ -24,22 +35,27 @@ const uploadProductImage = async (req, res) => {
       });
     }
 
-    const result = await uploadToCloudinary(
-      req.file.buffer,
-      `product-${Date.now()}`,
-      'aaxoms/products',
-      'image'
-    );
+    if (!String(req.file.mimetype || '').startsWith('image/')) {
+      // Remove accidental non-image if multer allowed it
+      deleteLocalFile(`/uploads/${PRODUCT_FOLDER}/${req.file.filename}`);
+      return res.status(400).json({
+        success: false,
+        message: 'Only image files are allowed for product images'
+      });
+    }
+
+    const data = fileToUploadResult(req.file, PRODUCT_FOLDER, req);
 
     res.json({
       success: true,
       message: 'Product image uploaded successfully',
       data: {
-        url: result.secure_url,
-        publicId: result.public_id,
-        fileName: req.file.originalname,
-        size: result.bytes,
-        format: result.format
+        url: data.url,
+        path: data.path,
+        publicId: data.publicId,
+        fileName: data.fileName,
+        size: data.size,
+        format: data.format,
       }
     });
   } catch (error) {
@@ -52,11 +68,11 @@ const uploadProductImage = async (req, res) => {
   }
 };
 
-// ==================== UPLOAD MULTIPLE PRODUCT IMAGES ====================
+// ==================== UPLOAD MULTIPLE PRODUCT IMAGES (LOCAL DISK) ====================
 /**
- * Upload multiple product images
+ * Upload multiple product images to server uploads/products
  * POST /api/upload/product-images
- * Requires: files in request (multiple)
+ * Requires: files in request (field name: files)
  */
 const uploadProductImages = async (req, res) => {
   try {
@@ -67,16 +83,32 @@ const uploadProductImages = async (req, res) => {
       });
     }
 
-    const results = await uploadMultipleToCloudinary(req.files, 'aaxoms/products');
+    const accepted = [];
+    for (const file of req.files) {
+      if (!String(file.mimetype || '').startsWith('image/')) {
+        deleteLocalFile(`/uploads/${PRODUCT_FOLDER}/${file.filename}`);
+        continue;
+      }
+      accepted.push(fileToUploadResult(file, PRODUCT_FOLDER, req));
+    }
+
+    if (accepted.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No valid image files provided'
+      });
+    }
 
     res.json({
       success: true,
       message: 'Product images uploaded successfully',
-      data: results.map(result => ({
-        url: result.secure_url,
-        publicId: result.public_id,
-        size: result.bytes,
-        format: result.format
+      data: accepted.map((result) => ({
+        url: result.url,
+        path: result.path,
+        publicId: result.publicId,
+        size: result.size,
+        format: result.format,
+        fileName: result.fileName,
       }))
     });
   } catch (error) {
@@ -360,23 +392,40 @@ const uploadFile = async (req, res) => {
   }
 };
 
-// ==================== DELETE FILE FROM CLOUDINARY ====================
+// ==================== DELETE FILE ====================
 /**
- * Delete file from Cloudinary
+ * Delete file from local uploads (product images) or Cloudinary (legacy)
  * DELETE /api/upload/:publicId
- * Requires: publicId in params
+ * publicId may be URL-encoded local path e.g. %2Fuploads%2Fproducts%2Fxxx.jpg
+ * Body alternative: { path: "/uploads/products/xxx.jpg" }
  */
 const deleteFile = async (req, res) => {
   try {
-    const { publicId } = req.params;
-    if (!publicId) {
+    const raw =
+      req.body?.path ||
+      req.query?.path ||
+      (req.params.publicId ? decodeURIComponent(req.params.publicId) : '');
+
+    if (!raw) {
       return res.status(400).json({
         success: false,
-        message: 'Public ID required'
+        message: 'File path or public ID required'
       });
     }
 
-    const result = await deleteFromCloudinary(publicId);
+    // Local product (or other) uploads
+    if (isLocalUploadPath(raw) || raw.startsWith('uploads/')) {
+      const pathValue = raw.startsWith('uploads/') ? `/${raw}` : raw;
+      const deleted = deleteLocalFile(pathValue);
+      return res.json({
+        success: true,
+        message: deleted ? 'Local file deleted successfully' : 'File not found (already removed)',
+        data: { path: pathValue, deleted }
+      });
+    }
+
+    // Legacy Cloudinary
+    const result = await deleteFromCloudinary(raw);
 
     res.json({
       success: true,

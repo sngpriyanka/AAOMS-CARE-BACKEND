@@ -118,6 +118,23 @@ app.use(cors({
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
+// ==================== Local product (and other) uploads ====================
+// Serve files from disk: GET /uploads/products/<filename>
+// Must be registered BEFORE the React SPA catch-all below.
+const path = require('path');
+const { UPLOADS_ROOT, ensureUploadTree } = require('./utils/localUpload');
+ensureUploadTree();
+app.use(
+  '/uploads',
+  express.static(UPLOADS_ROOT, {
+    maxAge: '7d',
+    etag: true,
+    index: false,
+    fallthrough: true,
+  })
+);
+console.log(`📁 Serving local uploads from: ${UPLOADS_ROOT} → /uploads`);
+
 // Performance: cache headers for mostly-static public GET endpoints (products, banners, instagram, reviews, etc.)
 // Short-ish TTLs for freshness while reducing load. Private user data (orders, cart, wishlist) are not cached here.
 const publicCacheablePaths = [
@@ -221,12 +238,14 @@ app.use('/api/contact', contactRoutes);
 app.use('/api/categories', categoryRoutes);
 
 // ==================== Serve React Frontend ====================
-const path = require('path');
-
 app.use(express.static(path.join(__dirname, 'build')));
 
-// This must be AFTER all API routes
+// This must be AFTER all API routes and /uploads static
 app.get('*', (req, res) => {
+  // Do not hijack missing upload assets with index.html
+  if (req.path.startsWith('/uploads/')) {
+    return res.status(404).json({ success: false, message: 'File not found' });
+  }
   res.sendFile(path.join(__dirname, 'build', 'index.html'));
 });
 
@@ -235,6 +254,21 @@ app.use((err, req, res, next) => {
   console.error('Server Error:', err.message);
   if (err.stack) {
     console.error(err.stack);
+  }
+  // Multer file size / type errors
+  if (err && err.name === 'MulterError') {
+    return res.status(400).json({
+      success: false,
+      message: err.code === 'LIMIT_FILE_SIZE'
+        ? 'File is too large. Max 10MB per product image.'
+        : err.message || 'Upload error',
+    });
+  }
+  if (err && /File type not allowed/i.test(err.message || '')) {
+    return res.status(400).json({
+      success: false,
+      message: err.message,
+    });
   }
   if (!err.status || err.status >= 500) {
     console.error('  →', req.method, req.originalUrl, 'body:', JSON.stringify(req.body).slice(0, 300));
