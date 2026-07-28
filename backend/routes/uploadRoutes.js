@@ -1,26 +1,47 @@
 /**
- * Upload Routes — ACTIVE: Multer diskStorage → local folders under UPLOADS_DIR
+ * Upload Routes
+ * ACTIVE: local Multer diskStorage → UPLOADS_DIR/{products,profile,banners,...}
+ * Cloudinary is NOT used for any of these endpoints.
  *
- * Folders: profile, products, categories, videos, banners, testimonials, gallery, documents
- * DB stores relative paths: /uploads/<folder>/<filename>
- *
- * Cloudinary middleware was previously:
- *   // const { upload } = require('../utils/cloudinaryConfig');
- *   // router.post('/product-image', protect, adminOnly, upload.single('file'), ...)
- * Full Cloudinary implementation is commented in utils/cloudinaryConfig.js (do not delete).
+ * API paths (unchanged for frontend):
+ *   POST /api/upload/product-image
+ *   POST /api/upload/product-images
+ *   POST /api/upload/product-video
+ *   POST /api/upload/banner
+ *   POST /api/upload/banners
+ *   POST /api/upload/profile-picture
+ *   POST /api/upload/testimonial
+ *   POST /api/upload/category-image
+ *   POST /api/upload/file
+ *   POST /api/upload/document
+ *   DELETE /api/upload/:publicId
+ *   DELETE /api/upload/file-by-path
  */
 
 const express = require('express');
 const router = express.Router();
-// ACTIVE: per-folder Multer disk uploaders (local storage under UPLOADS_DIR)
-const { createUploader, setUploadFolder } = require('../utils/localUpload');
-// COMMENTED: Cloudinary multer (memoryStorage) — DO NOT use for product images
-// const { upload } = require('../utils/cloudinaryConfig');
-// // router.post('/product-images', protect, adminOnly, upload.array('files', 10), ...)
 const { protect, adminOnly } = require('../middleware/roleMiddleware');
 const uploadController = require('../controllers/uploadController');
 
-// Product images → UPLOADS_DIR/products (diskStorage). Never Cloudinary.
+// ---------------------------------------------------------------------------
+// CLOUDINARY (OLD — COMMENTED OUT, DO NOT DELETE)
+// ---------------------------------------------------------------------------
+// const { upload } = require('../utils/cloudinaryConfig');
+// // Previously: memoryStorage multer → uploadToCloudinary(req.file.buffer, ...)
+// // router.post('/product-image', protect, adminOnly, upload.single('file'), uploadController.uploadProductImage);
+// // router.post('/product-images', protect, adminOnly, upload.array('files', 10), uploadController.uploadProductImages);
+// // router.post('/banner', protect, adminOnly, upload.single('file'), uploadController.uploadBanner);
+// // router.post('/profile-picture', protect, upload.single('file'), uploadController.uploadProfilePicture);
+// // Full Cloudinary source remains in utils/cloudinaryConfig.js (commented block).
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// LOCAL MULTER (ACTIVE) — diskStorage via utils/localUpload.js
+// Saves under UPLOADS_DIR (e.g. .../aaoms-data/uploads or backend/uploads)
+// Subfolders: products, profile, banners, videos, gallery, testimonials, documents, categories
+// ---------------------------------------------------------------------------
+const { createUploader, setUploadFolder } = require('../utils/localUpload');
+
 const productImages = createUploader('products', { maxSizeMb: 10, imagesOnly: true });
 const categoryImages = createUploader('categories', { maxSizeMb: 5, imagesOnly: true });
 const profileImages = createUploader('profile', { maxSizeMb: 5, imagesOnly: true });
@@ -30,21 +51,13 @@ const testimonialImages = createUploader('testimonials', {
   maxSizeMb: 5,
   imagesOnly: true,
 });
-// Generic: images/videos/pdf → gallery (or documents for PDF via controller logic)
 const genericFiles = createUploader('gallery', { maxSizeMb: 50 });
 const documentFiles = createUploader('documents', { maxSizeMb: 50 });
 
-/**
- * GET /api/upload/status
- * Diagnostics for HostingRaja (which folder Node uses, writable?, counts)
- */
+// Diagnostics
 router.get('/status', uploadController.getUploadStatus);
 
-/**
- * POST /api/upload/file
- * Generic gallery upload (reviews, misc)
- * // CLOUDINARY (commented): upload.single('file') from memoryStorage
- */
+// Generic / gallery
 router.post(
   '/file',
   setUploadFolder('gallery'),
@@ -52,10 +65,7 @@ router.post(
   uploadController.uploadFile
 );
 
-/**
- * POST /api/upload/document
- * PDF / document uploads → uploads/documents
- */
+// Documents
 router.post(
   '/document',
   protect,
@@ -65,9 +75,7 @@ router.post(
   uploadController.uploadFile
 );
 
-/**
- * POST /api/upload/product-image
- */
+// Product images (single)
 router.post(
   '/product-image',
   protect,
@@ -77,9 +85,7 @@ router.post(
   uploadController.uploadProductImage
 );
 
-/**
- * POST /api/upload/product-images
- */
+// Product images (multiple) — field name: files
 router.post(
   '/product-images',
   protect,
@@ -89,9 +95,7 @@ router.post(
   uploadController.uploadProductImages
 );
 
-/**
- * POST /api/upload/product-video
- */
+// Product video
 router.post(
   '/product-video',
   protect,
@@ -101,10 +105,7 @@ router.post(
   uploadController.uploadProductVideo
 );
 
-/**
- * POST /api/upload/category-image
- * Single category image → /uploads/categories/<filename>
- */
+// Category image
 router.post(
   '/category-image',
   protect,
@@ -114,9 +115,7 @@ router.post(
   uploadController.uploadCategoryImage
 );
 
-/**
- * POST /api/upload/banner
- */
+// Banner (single)
 router.post(
   '/banner',
   protect,
@@ -126,9 +125,7 @@ router.post(
   uploadController.uploadBanner
 );
 
-/**
- * POST /api/upload/banners
- */
+// Banners (multiple)
 router.post(
   '/banners',
   protect,
@@ -138,9 +135,7 @@ router.post(
   uploadController.uploadBanners
 );
 
-/**
- * POST /api/upload/testimonial
- */
+// Testimonial
 router.post(
   '/testimonial',
   protect,
@@ -150,9 +145,7 @@ router.post(
   uploadController.uploadTestimonialImage
 );
 
-/**
- * POST /api/upload/profile-picture
- */
+// Profile picture
 router.post(
   '/profile-picture',
   protect,
@@ -161,10 +154,7 @@ router.post(
   uploadController.uploadProfilePicture
 );
 
-/**
- * DELETE /api/upload/file-by-path
- * body: { path: "/uploads/products/..." }
- */
+// Delete local file by path
 router.delete(
   '/file-by-path',
   protect,
@@ -172,10 +162,7 @@ router.delete(
   uploadController.deleteFile
 );
 
-/**
- * DELETE /api/upload/:publicId
- * URL-encoded local path
- */
+// Delete by publicId / path param (legacy route name; deletes local file)
 router.delete('/:publicId', protect, adminOnly, uploadController.deleteFile);
 
 module.exports = router;
