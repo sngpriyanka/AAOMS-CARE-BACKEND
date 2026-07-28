@@ -10,6 +10,7 @@ const { protect, adminOnly } = require('../middleware/roleMiddleware');
 const uploadController = require('../controllers/uploadController');
 
 const productImages = createUploader('products', { maxSizeMb: 10, imagesOnly: true });
+const categoryImages = createUploader('categories', { maxSizeMb: 5, imagesOnly: true });
 const profileImages = createUploader('profile', { maxSizeMb: 5, imagesOnly: true });
 const productVideos = createUploader('videos', { maxSizeMb: 100, videosOnly: true });
 const bannerImages = createUploader('banners', { maxSizeMb: 10, imagesOnly: true });
@@ -19,6 +20,12 @@ const testimonialImages = createUploader('testimonials', {
 });
 // Generic: images/videos/pdf → gallery (videos route uses videos folder when dedicated)
 const genericFiles = createUploader('gallery', { maxSizeMb: 50 });
+
+/**
+ * GET /api/upload/status
+ * Diagnostics for HostingRaja (which folder Node uses, writable?, counts)
+ */
+router.get('/status', uploadController.getUploadStatus);
 
 /**
  * POST /api/upload/file
@@ -65,6 +72,19 @@ router.post(
   setUploadFolder('videos'),
   productVideos.single('file'),
   uploadController.uploadProductVideo
+);
+
+/**
+ * POST /api/upload/category-image
+ * Single category image → /uploads/categories/<filename>
+ */
+router.post(
+  '/category-image',
+  protect,
+  adminOnly,
+  setUploadFolder('categories'),
+  categoryImages.single('file'),
+  uploadController.uploadCategoryImage
 );
 
 /**

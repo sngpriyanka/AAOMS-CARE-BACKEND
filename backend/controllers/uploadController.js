@@ -4,12 +4,83 @@
  * PostgreSQL should store data.path (relative /uploads/...).
  */
 
+const fs = require('fs');
+const path = require('path');
 const {
   fileToUploadResult,
   deleteLocalFile,
   isLocalUploadPath,
   normalizeFolderKey,
+  ensureUploadTree,
+  DEFAULT_SUBDIRS,
+  getUploadsRoot,
 } = require('../utils/localUpload');
+
+/**
+ * GET /api/upload/status
+ * Diagnostics: which disk folder Node is using, writable?, file counts.
+ * Helps HostingRaja debug empty ~/aaoms-data/uploads folders.
+ */
+const getUploadStatus = async (req, res) => {
+  try {
+    const root = ensureUploadTree();
+    const subdirs = {};
+    let writable = false;
+    let writeError = null;
+
+    DEFAULT_SUBDIRS.forEach((name) => {
+      const dir = path.join(root, name);
+      let count = 0;
+      try {
+        count = fs
+          .readdirSync(dir)
+          .filter((f) => f !== '.gitkeep' && f !== '.write-test').length;
+      } catch (_) {
+        count = -1;
+      }
+      subdirs[name] = { path: dir, fileCount: count };
+    });
+
+    try {
+      const test = path.join(root, 'products', `.write-test-${Date.now()}`);
+      fs.writeFileSync(test, 'ok');
+      fs.unlinkSync(test);
+      writable = true;
+    } catch (e) {
+      writeError = e.message;
+    }
+
+    return res.json({
+      success: true,
+      cloudinary: false,
+      message:
+        'Local disk uploads only. Product images must appear under uploads/products.',
+      env: {
+        UPLOADS_DIR: process.env.UPLOADS_DIR || null,
+        BACKEND_PUBLIC_URL: process.env.BACKEND_PUBLIC_URL || null,
+        NODE_ENV: process.env.NODE_ENV || null,
+        HOME: process.env.HOME || null,
+      },
+      uploadsRoot: root,
+      resolvedVia: getUploadsRoot(),
+      writable,
+      writeError,
+      subdirs,
+      hint:
+        !process.env.UPLOADS_DIR
+          ? 'UPLOADS_DIR is NOT set — files go to backend/uploads (not ~/aaoms-data/uploads). Set UPLOADS_DIR to the absolute path and restart PM2 with --update-env.'
+          : writable
+            ? 'Config looks OK. Upload a product image, then re-check subdirs.products.fileCount.'
+            : 'Cannot write to uploads root — fix permissions or free disk space.',
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Upload status check failed',
+      error: error.message,
+    });
+  }
+};
 
 function singleFileResponse(req, res, folder, message) {
   if (!req.file) {
@@ -172,6 +243,53 @@ const uploadProductImages = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Error uploading images',
+      error: error.message,
+    });
+  }
+};
+
+// ==================== CATEGORY IMAGES ====================
+// Files: UPLOADS_DIR/categories/<filename>
+// API returns path=/uploads/categories/... → store path in PostgreSQL
+const uploadCategoryImage = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'No file provided',
+      });
+    }
+    if (!String(req.file.mimetype || '').startsWith('image/')) {
+      deleteLocalFile(`/uploads/categories/${req.file.filename}`);
+      return res.status(400).json({
+        success: false,
+        message: 'Only image files are allowed for category images',
+      });
+    }
+
+    const data = fileToUploadResult(req.file, 'categories', req);
+    console.log(
+      `[upload] Category image saved → disk: ${data.diskPath} | path(for DB): ${data.path}`
+    );
+
+    return res.json({
+      success: true,
+      message: 'Category image uploaded successfully',
+      data: {
+        path: data.path,
+        url: data.url,
+        publicId: data.path,
+        fileName: data.fileName,
+        size: data.size,
+        format: data.format,
+        folder: 'categories',
+      },
+    });
+  } catch (error) {
+    console.error('Error uploading category image:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error uploading category image',
       error: error.message,
     });
   }
@@ -422,8 +540,10 @@ const deleteFile = async (req, res) => {
 };
 
 module.exports = {
+  getUploadStatus,
   uploadProductImage,
   uploadProductImages,
+  uploadCategoryImage,
   uploadProfilePicture,
   uploadProductVideo,
   uploadBanner,

@@ -13,6 +13,7 @@ echo "==> Creating upload tree at: $UPLOAD_ROOT"
 mkdir -p \
   "$UPLOAD_ROOT/profile" \
   "$UPLOAD_ROOT/products" \
+  "$UPLOAD_ROOT/categories" \
   "$UPLOAD_ROOT/videos" \
   "$UPLOAD_ROOT/banners" \
   "$UPLOAD_ROOT/testimonials" \

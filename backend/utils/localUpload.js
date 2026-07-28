@@ -21,6 +21,7 @@ const multer = require('multer');
 const DEFAULT_SUBDIRS = [
   'profile',
   'products',
+  'categories',
   'videos',
   'banners',
   'testimonials',
@@ -47,10 +48,29 @@ function expandHome(input) {
 /**
  * Resolve uploads root from env (read each time so dotenv can load first).
  * Default: backend/uploads (local dev).
+ *
+ * HostingRaja: prefer ABSOLUTE path so PM2/HOME quirks never mis-resolve ~ :
+ *   UPLOADS_DIR=/var/www/<site-id>/aaoms-data/uploads
+ *   or UPLOADS_DIR=~/aaoms-data/uploads
  */
 function resolveUploadsRoot() {
   const raw = (process.env.UPLOADS_DIR || 'uploads').trim();
-  const configured = expandHome(raw);
+  let configured = expandHome(raw);
+
+  // If ~ expansion failed (HOME empty under some process managers), try common HostingRaja home
+  if (
+    (raw.startsWith('~/') || raw.startsWith('~\\')) &&
+    configured.startsWith('~')
+  ) {
+    const fallbackHome =
+      process.env.HOME ||
+      process.env.USERPROFILE ||
+      (typeof process.getuid === 'function' ? null : null);
+    if (fallbackHome) {
+      configured = path.join(fallbackHome, raw.slice(2));
+    }
+  }
+
   if (!configured) {
     return path.join(__dirname, '..', 'uploads');
   }
@@ -158,6 +178,7 @@ function normalizeFolderKey(folderKey) {
   if (ALLOWED_FOLDERS.has(key)) return key;
   if (key === 'profiles' || key === 'avatar') return 'profile';
   if (key === 'product' || key === 'product-images') return 'products';
+  if (key === 'category' || key === 'category-images') return 'categories';
   if (key === 'video') return 'videos';
   if (key === 'banner') return 'banners';
   if (key === 'testimonial') return 'testimonials';
