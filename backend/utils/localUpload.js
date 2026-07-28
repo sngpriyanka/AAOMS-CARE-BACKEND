@@ -394,7 +394,23 @@ function collectPathsFromFields(record, fields = []) {
 }
 
 function collectProductImagePaths(product) {
-  return collectPathsFromFields(product, ['image', 'images']);
+  const base = collectPathsFromFields(product, ['image', 'images']);
+  // Include color-variant galleries so deletes/updates clean all local files
+  const fromVariants = [];
+  if (Array.isArray(product?.variants)) {
+    product.variants.forEach((v) => {
+      if (!v) return;
+      if (Array.isArray(v.images)) {
+        v.images.forEach((img) => {
+          if (typeof img === 'string' && img) fromVariants.push(img);
+          else if (img && (img.path || img.url)) {
+            fromVariants.push(String(img.path || img.url));
+          }
+        });
+      }
+    });
+  }
+  return Array.from(new Set([...base, ...fromVariants]));
 }
 
 function cleanupRemovedMedia(previousPaths, nextPaths) {
@@ -462,7 +478,7 @@ const api = {
   deleteLocalFile,
   deleteLocalFiles,
   collectPathsFromFields,
-  collectProductImagePaths,
+  collectProductImagePaths, // used by product update cleanup (product + variant images)
   cleanupRemovedMedia,
   cleanupRemovedProductImages,
   cleanupAllProductImages,

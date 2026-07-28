@@ -30,11 +30,16 @@ const validatePhoneOrEmpty = (phone) => {
 };
 
 const validateProductData = (product) => {
-  if (!product.name || !product.price) {
+  if (!product?.name || !String(product.name).trim()) {
     return { valid: false, message: 'Product name and price are required' };
   }
 
-  if (product.price <= 0) {
+  const price = Number(product.price);
+  if (!Number.isFinite(price)) {
+    return { valid: false, message: 'Product name and price are required' };
+  }
+
+  if (price <= 0) {
     return { valid: false, message: 'Price must be greater than 0' };
   }
 

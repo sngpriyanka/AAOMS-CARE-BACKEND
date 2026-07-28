@@ -17,9 +17,21 @@ const connectPostgres = async () => {
     }
 
     const isNeon = connectionString.includes('neon.tech');
+    // Avoid pg v8 sslmode deprecation noise: prefer explicit ssl object for Neon
+    let pgConnectionString = connectionString;
+    try {
+      if (isNeon && connectionString.includes('sslmode=')) {
+        const u = new URL(connectionString);
+        u.searchParams.delete('sslmode');
+        u.searchParams.delete('channel_binding');
+        pgConnectionString = u.toString();
+      }
+    } catch (_) {
+      pgConnectionString = connectionString;
+    }
 
     pool = new Pool({
-      connectionString,
+      connectionString: pgConnectionString,
       ssl: isNeon ? { rejectUnauthorized: false } : false,
       max: 10,
       idleTimeoutMillis: 30000,

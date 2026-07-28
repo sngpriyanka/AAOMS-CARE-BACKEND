@@ -275,7 +275,27 @@ exports.updateCartItem = async (req, res) => {
       });
     }
 
-    item.quantity = Number(quantity);
+    const qty = Number(quantity);
+    // Enforce variant stock on quantity changes
+    try {
+      const product = await Database.read('products', item.productId);
+      if (product) {
+        const variant = findVariant(product, {
+          variantId: item.variantId,
+          color: item.color,
+        });
+        if (variant && !isVariantInStock(variant, item.size, qty)) {
+          return res.status(400).json({
+            success: false,
+            message: `Only limited stock available for ${item.color || 'this color'}${item.size ? ` / ${item.size}` : ''}`,
+          });
+        }
+      }
+    } catch (stockErr) {
+      console.warn('Cart stock check warning:', stockErr.message);
+    }
+
+    item.quantity = qty;
     cart.total = recalculateTotal(cart.items);
 
     const updated = await Database.update(CARTS_COLLECTION, cart.id || cart._id, {

@@ -6,11 +6,9 @@ const { getMatchingCategories } = require('../utils/categories');
 const {
   toStoredMediaPath,
   toPublicUrl,
-  cleanupRemovedProductImages,
   cleanupAllProductImages,
   cleanupRemovedMedia,
-  deleteLocalFile,
-  isLocalUploadPath,
+  collectProductImagePaths,
 } = require('../utils/localUpload');
 const {
   normalizeVariants,
@@ -138,7 +136,14 @@ const normalizeProductPayload = (body, existingProduct = null) => {
     name: body.name,
     slug: buildProductSlug(body, existingProduct),
     price: Number(body.price),
-    originalPrice: body.originalPrice ? Number(body.originalPrice) : null,
+    originalPrice:
+      body.originalPrice !== undefined
+        ? body.originalPrice
+          ? Number(body.originalPrice)
+          : null
+        : existingProduct?.originalPrice != null
+          ? Number(existingProduct.originalPrice)
+          : null,
     description,
     subDescription: body.subDescription || '',
     productInformation: body.productInformation || '',
@@ -155,8 +160,16 @@ const normalizeProductPayload = (body, existingProduct = null) => {
     sizeChart: body.sizeChart
       ? (typeof body.sizeChart === 'string' ? (() => { try { return JSON.parse(body.sizeChart); } catch { return null; } })() : body.sizeChart)
       : null,
-    quickDry: !!body.quickDry,
-    isActive: body.isActive !== undefined ? body.isActive : true
+    quickDry:
+      body.quickDry !== undefined
+        ? !!body.quickDry
+        : !!existingProduct?.quickDry,
+    isActive:
+      body.isActive !== undefined
+        ? body.isActive
+        : existingProduct
+          ? existingProduct.isActive !== false
+          : true,
   };
 };
 
@@ -476,12 +489,17 @@ exports.updateProduct = async (req, res) => {
       });
     }
 
-    // After successful DB update, remove replaced/dropped local product images from disk
+    // After successful DB update, remove replaced/dropped local files once (product + variant images)
     try {
-      cleanupRemovedProductImages(existingProduct, payload.images);
-      const prevVariantImgs = collectVariantImagePaths(existingProduct);
-      const nextVariantImgs = collectVariantImagePaths(payload);
-      cleanupRemovedMedia(prevVariantImgs, nextVariantImgs);
+      // Unified keep-set so shared paths between product.images and variants are not unlinked
+      const nextKeep = [
+        ...(Array.isArray(payload.images) ? payload.images : []),
+        ...collectVariantImagePaths(payload),
+      ]
+        .map((p) => toStoredMediaPath(p))
+        .filter(Boolean);
+      const prevAll = collectProductImagePaths(existingProduct);
+      cleanupRemovedMedia(prevAll, nextKeep);
     } catch (cleanupErr) {
       console.warn('Product image cleanup warning:', cleanupErr.message);
     }
@@ -537,9 +555,6 @@ exports.deleteProduct = async (req, res) => {
 
       // --- Local disk delete (ACTIVE) — fs.unlink for /uploads/products/... (+ variant images)
       cleanupAllProductImages(product);
-      collectVariantImagePaths(product).forEach((p) => {
-        if (isLocalUploadPath(p)) deleteLocalFile(p);
-      });
     } catch (cleanupErr) {
       console.warn('Product image file cleanup warning:', cleanupErr.message);
     }

@@ -12,13 +12,15 @@
 
 const express = require('express');
 const router = express.Router();
-// ACTIVE: per-folder Multer disk uploaders (local storage)
+// ACTIVE: per-folder Multer disk uploaders (local storage under UPLOADS_DIR)
 const { createUploader, setUploadFolder } = require('../utils/localUpload');
-// COMMENTED: Cloudinary multer (memoryStorage) — re-enable via cloudinaryConfig if needed
+// COMMENTED: Cloudinary multer (memoryStorage) — DO NOT use for product images
 // const { upload } = require('../utils/cloudinaryConfig');
+// // router.post('/product-images', protect, adminOnly, upload.array('files', 10), ...)
 const { protect, adminOnly } = require('../middleware/roleMiddleware');
 const uploadController = require('../controllers/uploadController');
 
+// Product images → UPLOADS_DIR/products (diskStorage). Never Cloudinary.
 const productImages = createUploader('products', { maxSizeMb: 10, imagesOnly: true });
 const categoryImages = createUploader('categories', { maxSizeMb: 5, imagesOnly: true });
 const profileImages = createUploader('profile', { maxSizeMb: 5, imagesOnly: true });

@@ -165,6 +165,15 @@ function multiFileResponse(req, res, folder, message, imagesOnly = false) {
 // ==================== PRODUCT IMAGES (local HostingRaja disk) ====================
 // Files: UPLOADS_DIR/products/<filename>
 // API returns path=/uploads/products/...  → store path in PostgreSQL only
+/**
+ * POST /api/upload/product-image
+ * Multer diskStorage already wrote req.file to UPLOADS_DIR/products/
+ * NEVER calls Cloudinary (uploadToCloudinary / upload_stream commented out).
+ *
+ * // CLOUDINARY (commented — do not delete):
+ * // const result = await uploadToCloudinary(req.file.buffer, name, 'aaxoms/products', 'image');
+ * // return { url: result.secure_url, publicId: result.public_id };
+ */
 const uploadProductImage = async (req, res) => {
   try {
     if (!req.file) {
@@ -181,24 +190,31 @@ const uploadProductImage = async (req, res) => {
       });
     }
 
+    // req.file.path is absolute disk path from Multer; store relative web path only
     const data = fileToUploadResult(req.file, 'products', req);
+    const relativeUrl = data.path; // /uploads/products/<filename>
     console.log(
-      `[upload] Product image saved → disk: ${data.diskPath} | path(for DB): ${data.path}`
+      `[upload] Product image LOCAL only → disk: ${data.diskPath} | DB path: ${relativeUrl}`
     );
+
+    const imageEntry = {
+      url: relativeUrl,
+      filename: req.file.filename,
+      path: relativeUrl,
+      publicId: relativeUrl,
+      fileName: data.fileName,
+      size: data.size,
+      format: data.format,
+      folder: 'products',
+    };
 
     return res.json({
       success: true,
       message: 'Product image uploaded successfully',
-      data: {
-        // Prefer path for PostgreSQL; url for immediate display
-        path: data.path,
-        url: data.url,
-        publicId: data.path,
-        fileName: data.fileName,
-        size: data.size,
-        format: data.format,
-        folder: 'products',
-      },
+      // Spec shape
+      images: [imageEntry],
+      // Frontend / ManageProducts expects data.path || data.url (single or array)
+      data: imageEntry,
     });
   } catch (error) {
     console.error('Error uploading product image:', error);
@@ -210,6 +226,10 @@ const uploadProductImage = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/upload/product-images  (field: files[])
+ * Local Multer only — no Cloudinary API keys required.
+ */
 const uploadProductImages = async (req, res) => {
   try {
     if (!req.files || req.files.length === 0) {
@@ -226,13 +246,15 @@ const uploadProductImages = async (req, res) => {
         continue;
       }
       const data = fileToUploadResult(file, 'products', req);
+      const relativeUrl = data.path; // /uploads/products/<filename>
       console.log(
-        `[upload] Product image saved → disk: ${data.diskPath} | path(for DB): ${data.path}`
+        `[upload] Product image LOCAL only → disk: ${data.diskPath} | DB path: ${relativeUrl}`
       );
       accepted.push({
-        path: data.path,
-        url: data.url,
-        publicId: data.path,
+        url: relativeUrl,
+        filename: file.filename,
+        path: relativeUrl,
+        publicId: relativeUrl,
         size: data.size,
         format: data.format,
         fileName: data.fileName,
@@ -250,6 +272,12 @@ const uploadProductImages = async (req, res) => {
     return res.json({
       success: true,
       message: 'Product images uploaded successfully',
+      // Spec: { success, images: [{ url, filename }] }
+      images: accepted.map((a) => ({
+        url: a.url,
+        filename: a.filename,
+      })),
+      // Frontend ManageProducts: (response.data.data || []).map(item => item.path || item.url)
       data: accepted,
     });
   } catch (error) {
