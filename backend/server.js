@@ -161,6 +161,7 @@ const publicCacheablePaths = [
   '/api/testimonials',
   '/api/instagram-feed',
   '/api/reviews',
+  '/api/our-story',
   '/api/health',
   '/api/database-status'
 ];
@@ -227,6 +228,7 @@ const notificationRoutes = require('./routes/notificationRoutes');
 const subscriptionRoutes = require('./routes/subscriptionRoutes');
 const contactRoutes = require('./routes/contactRoutes');
 const categoryRoutes = require('./routes/categoryRoutes');
+const ourStoryRoutes = require('./routes/ourStoryRoutes');
 
 // Periodic email scheduler (node-cron)
 let cron;
@@ -254,6 +256,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/contact', contactRoutes);
 app.use('/api/categories', categoryRoutes);
+app.use('/api/our-story', ourStoryRoutes);
 
 // ==================== Serve React Frontend ====================
 app.use(express.static(path.join(__dirname, 'build')));

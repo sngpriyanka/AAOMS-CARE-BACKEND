@@ -33,7 +33,8 @@ class PostgresDatabase {
       reviews: 'reviews',
       notifications: 'notifications',
       subscribers: 'subscribers',
-      contactMessages: 'contact_messages'
+      contactMessages: 'contact_messages',
+      ourStory: 'our_story',
     };
     return map[collection] || collection;
   }
@@ -47,7 +48,7 @@ class PostgresDatabase {
     if (!out.id && out._id) out.id = String(out._id);
 
     // Parse JSONB fields back to objects/arrays for the rest of the app
-    const jsonFields = ['items', 'images', 'sizes', 'colors', 'variants', 'description', 'shipping_address', 'metadata', 'pages', 'size_chart', 'permissions'];
+    const jsonFields = ['items', 'images', 'sizes', 'colors', 'variants', 'description', 'shipping_address', 'metadata', 'pages', 'size_chart', 'permissions', 'content'];
     for (const f of jsonFields) {
       if (out[f] !== undefined && out[f] !== null) {
         if (typeof out[f] === 'string') {
@@ -175,7 +176,7 @@ class PostgresDatabase {
     let idx = 1;
 
     // Special handling: convert known complex fields to JSON string (pg driver handles objects for jsonb too)
-    const complexFields = ['items', 'images', 'sizes', 'colors', 'variants', 'description', 'shippingAddress', 'shipping_address', 'metadata', 'pages', 'sizeChart', 'size_chart', 'permissions'];
+    const complexFields = ['items', 'images', 'sizes', 'colors', 'variants', 'description', 'shippingAddress', 'shipping_address', 'metadata', 'pages', 'sizeChart', 'size_chart', 'permissions', 'content'];
 
     for (const [key, val] of Object.entries(payload)) {
       // Map camelCase to snake_case for known columns
@@ -209,6 +210,7 @@ class PostgresDatabase {
       if (key === 'logoCharge') col = 'logo_charge';
       if (key === 'productName') col = 'product_name';
       if (key === 'createdBy') col = 'created_by';
+      if (key === 'updatedBy') col = 'updated_by';
       if (key === 'expiresAt') col = 'expires_at';
       if (key === 'profilePicture') col = 'profile_picture';
       if (key === 'googleAuth') col = 'google_auth';
@@ -405,7 +407,7 @@ class PostgresDatabase {
     // Always bump updated_at. Spread updates first so our forced updatedAt wins on collisions.
     const payload = { ...updates, updatedAt: new Date() };
 
-    const complexFields = ['items', 'images', 'sizes', 'colors', 'variants', 'description', 'shippingAddress', 'shipping_address', 'metadata', 'pages', 'sizeChart', 'size_chart', 'permissions'];
+    const complexFields = ['items', 'images', 'sizes', 'colors', 'variants', 'description', 'shippingAddress', 'shipping_address', 'metadata', 'pages', 'sizeChart', 'size_chart', 'permissions', 'content'];
 
     // Use a Map keyed by the final DB column name to guarantee no duplicate assignments
     // (objects returned by findBy/read contain both camelCase and snake_case because _normalize
@@ -445,6 +447,7 @@ class PostgresDatabase {
       if (key === 'logoCharge') col = 'logo_charge';
       if (key === 'productName') col = 'product_name';
       if (key === 'createdBy') col = 'created_by';
+      if (key === 'updatedBy') col = 'updated_by';
       if (key === 'expiresAt') col = 'expires_at';
       if (key === 'profilePicture') col = 'profile_picture';
       if (key === 'googleAuth') col = 'google_auth';

@@ -594,6 +594,27 @@ const ensureProductVariantsColumn = async (client) => {
   });
 };
 
+/** Our Story CMS — home BrandStory + /our-story page images & copy */
+const ensureOurStoryTable = async (client) => {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS our_story (
+      id TEXT PRIMARY KEY,
+      content JSONB NOT NULL DEFAULT '{}',
+      updated_by TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `).catch((err) => {
+    console.warn('ensureOurStoryTable create:', err.message);
+  });
+  await client.query(`
+    ALTER TABLE our_story ADD COLUMN IF NOT EXISTS updated_by TEXT;
+  `).catch(() => {});
+  await client.query(`
+    ALTER TABLE our_story ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+  `).catch(() => {});
+};
+
 const ensureSchemaPatches = async (client) => {
   await ensureAuthSchemaPatches(client);
   await ensureContactMessagesTable(client);
@@ -602,6 +623,7 @@ const ensureSchemaPatches = async (client) => {
   await ensureAddressesSchemaPatches(client);
   await ensurePendingPaymentsSchemaPatches(client);
   await ensureProductVariantsColumn(client);
+  await ensureOurStoryTable(client);
 };
 
 module.exports = {
@@ -611,5 +633,6 @@ module.exports = {
   ensureTestimonialsTable,
   ensureSubscribersTable,
   ensureAddressesSchemaPatches,
+  ensureOurStoryTable,
   ensureSchemaPatches
 };
