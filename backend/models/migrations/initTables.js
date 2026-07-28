@@ -92,6 +92,11 @@ const initializeTables = async (client) => {
       ALTER TABLE products ADD COLUMN IF NOT EXISTS product_information TEXT;
     `).catch(() => {});
 
+    // Color variants: [{ id, colorName, colorHex, images[], stock, sku, price, active, sizeStock? }]
+    await client.query(`
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS variants JSONB DEFAULT '[]';
+    `).catch(() => {});
+
     await client.query(`
       CREATE TABLE IF NOT EXISTS orders (
         id TEXT PRIMARY KEY,
@@ -579,6 +584,16 @@ const ensurePendingPaymentsSchemaPatches = async (client) => {
   await client.query(`CREATE INDEX IF NOT EXISTS idx_pending_payments_razorpay_order ON pending_payments(razorpay_order_id);`).catch(() => {});
 };
 
+const ensureProductVariantsColumn = async (client) => {
+  // Color variants JSONB — required for multi-color products (all categories)
+  await client.query(`
+    ALTER TABLE products
+    ADD COLUMN IF NOT EXISTS variants JSONB DEFAULT '[]'
+  `).catch((err) => {
+    console.warn('ensureProductVariantsColumn:', err.message);
+  });
+};
+
 const ensureSchemaPatches = async (client) => {
   await ensureAuthSchemaPatches(client);
   await ensureContactMessagesTable(client);
@@ -586,6 +601,7 @@ const ensureSchemaPatches = async (client) => {
   await ensureSubscribersTable(client);
   await ensureAddressesSchemaPatches(client);
   await ensurePendingPaymentsSchemaPatches(client);
+  await ensureProductVariantsColumn(client);
 };
 
 module.exports = {

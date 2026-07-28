@@ -47,7 +47,7 @@ class PostgresDatabase {
     if (!out.id && out._id) out.id = String(out._id);
 
     // Parse JSONB fields back to objects/arrays for the rest of the app
-    const jsonFields = ['items', 'images', 'sizes', 'colors', 'description', 'shipping_address', 'metadata', 'pages', 'size_chart', 'permissions'];
+    const jsonFields = ['items', 'images', 'sizes', 'colors', 'variants', 'description', 'shipping_address', 'metadata', 'pages', 'size_chart', 'permissions'];
     for (const f of jsonFields) {
       if (out[f] !== undefined && out[f] !== null) {
         if (typeof out[f] === 'string') {
@@ -175,7 +175,7 @@ class PostgresDatabase {
     let idx = 1;
 
     // Special handling: convert known complex fields to JSON string (pg driver handles objects for jsonb too)
-    const complexFields = ['items', 'images', 'sizes', 'colors', 'description', 'shippingAddress', 'shipping_address', 'metadata', 'pages', 'sizeChart', 'size_chart', 'permissions'];
+    const complexFields = ['items', 'images', 'sizes', 'colors', 'variants', 'description', 'shippingAddress', 'shipping_address', 'metadata', 'pages', 'sizeChart', 'size_chart', 'permissions'];
 
     for (const [key, val] of Object.entries(payload)) {
       // Map camelCase to snake_case for known columns
@@ -335,8 +335,11 @@ class PostgresDatabase {
     const limit = Math.min(Math.max(parseInt(options.limit, 10) || 10, 1), 100);
     const page = Math.max(parseInt(options.page, 10) || 1, 1);
     const offset = (page - 1) * limit;
-    const listColumns = 'id, name, slug, price, original_price, category, image, images, colors, quick_dry, is_active, created_at';
-    const selectClause = options.view === 'list' ? listColumns : '*';
+    // Prefer variants in list view; fall back if column not migrated yet
+    const listColumnsWithVariants =
+      'id, name, slug, price, original_price, category, image, images, colors, variants, quick_dry, is_active, created_at';
+    const listColumnsNoVariants =
+      'id, name, slug, price, original_price, category, image, images, colors, quick_dry, is_active, created_at';
 
     try {
       const countResult = await pool.query(
@@ -345,10 +348,41 @@ class PostgresDatabase {
       );
       const total = countResult.rows[0]?.total || 0;
 
-      const dataResult = await pool.query(
-        `SELECT ${selectClause} FROM products ${where} ORDER BY created_at DESC NULLS LAST LIMIT $${idx++} OFFSET $${idx++}`,
-        [...values, limit, offset]
-      );
+      const runSelect = async (selectClause) =>
+        pool.query(
+          `SELECT ${selectClause} FROM products ${where} ORDER BY created_at DESC NULLS LAST LIMIT $${idx} OFFSET $${idx + 1}`,
+          [...values, limit, offset]
+        );
+
+      let dataResult;
+      const selectPrimary = options.view === 'list' ? listColumnsWithVariants : '*';
+      try {
+        dataResult = await runSelect(selectPrimary);
+      } catch (selectErr) {
+        // Missing variants column before migration — retry without it
+        if (
+          /variants/i.test(selectErr.message || '') ||
+          selectErr.code === '42703'
+        ) {
+          console.warn(
+            'products.variants missing — using legacy list columns. Run: node scripts/ensure-variants-column.js'
+          );
+          try {
+            await pool.query(
+              `ALTER TABLE products ADD COLUMN IF NOT EXISTS variants JSONB DEFAULT '[]'`
+            );
+            dataResult = await runSelect(selectPrimary);
+          } catch (_) {
+            const fallback =
+              options.view === 'list' ? listColumnsNoVariants : '*';
+            dataResult = await runSelect(
+              fallback === '*' ? listColumnsNoVariants : fallback
+            );
+          }
+        } else {
+          throw selectErr;
+        }
+      }
 
       return {
         items: this._normalizeMany(dataResult.rows),
@@ -371,7 +405,7 @@ class PostgresDatabase {
     // Always bump updated_at. Spread updates first so our forced updatedAt wins on collisions.
     const payload = { ...updates, updatedAt: new Date() };
 
-    const complexFields = ['items', 'images', 'sizes', 'colors', 'description', 'shippingAddress', 'shipping_address', 'metadata', 'pages', 'sizeChart', 'size_chart', 'permissions'];
+    const complexFields = ['items', 'images', 'sizes', 'colors', 'variants', 'description', 'shippingAddress', 'shipping_address', 'metadata', 'pages', 'sizeChart', 'size_chart', 'permissions'];
 
     // Use a Map keyed by the final DB column name to guarantee no duplicate assignments
     // (objects returned by findBy/read contain both camelCase and snake_case because _normalize

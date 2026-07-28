@@ -76,19 +76,32 @@ exports.addToWishlist = async (req, res) => {
       });
     }
 
-    // Robust size-aware duplicate check (normalize ID to string + size to trimmed string)
+    // Duplicate: product + size + color (variant-aware)
     const pid = String(productId || '');
     const sizeNorm = (size || '').toString().trim();
+    const colorNorm = (color == null || color === '')
+      ? 'Default'
+      : (typeof color === 'object'
+          ? String(color.name || color.colorName || 'Default')
+          : String(color).trim() || 'Default');
+    const variantId = req.body.variantId ? String(req.body.variantId) : '';
+    const colorHex = req.body.colorHex || (typeof color === 'object' ? (color.hex || color.colorHex || '') : '') || '';
+
     const existing = wishlist.items.find(item => {
       const itemPid = String(item.productId || item.id || '');
       const itemSize = (item.size || '').toString().trim();
-      return itemPid === pid && itemSize === sizeNorm;
+      const itemColor = (item.color || 'Default').toString().trim();
+      const itemVariant = item.variantId ? String(item.variantId) : '';
+      if (variantId && itemVariant) {
+        return itemPid === pid && itemSize === sizeNorm && itemVariant === variantId;
+      }
+      return itemPid === pid && itemSize === sizeNorm && itemColor === colorNorm;
     });
     
     if (existing) {
       return res.json({
         success: false,
-        message: 'This item with the selected size is already in your wishlist.',
+        message: 'This item with the selected size and color is already in your wishlist.',
         isDuplicate: true,
         data: wishlist
       });
@@ -101,8 +114,10 @@ exports.addToWishlist = async (req, res) => {
       name: name || 'Product',
       price: price || 0,
       image: image || '',
-      size,
-      color,
+      size: sizeNorm,
+      color: colorNorm,
+      colorHex: colorHex || undefined,
+      variantId: variantId || undefined,
       addedAt: new Date().toISOString()
     });
 

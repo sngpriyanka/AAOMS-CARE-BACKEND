@@ -1,6 +1,11 @@
 const Database = require('../models/DatabaseAdapter');
 const { validateCartItem } = require('../utils/validators');
 const { sanitizeLineItems } = require('../utils/productCascade');
+const {
+  findVariant,
+  resolveVariantPrice,
+  isVariantInStock,
+} = require('../utils/productVariants');
 
 const CARTS_COLLECTION = 'carts';
 
@@ -13,14 +18,17 @@ const recalculateTotal = (items = []) =>
 const normalizeColor = (color) => {
   if (color == null || color === '') return 'Default';
   if (typeof color === 'string') return color;
-  if (typeof color === 'object' && color.name) return String(color.name);
+  if (typeof color === 'object' && (color.name || color.colorName)) {
+    return String(color.name || color.colorName);
+  }
   return String(color);
 };
 
 /** Prefer a short URL/path; avoid embedding multi‑MB base64 blobs in cart rows. */
-const resolveCartImage = (product, clientImage) => {
+const resolveCartImage = (product, clientImage, variant = null) => {
   const candidates = [
     clientImage,
+    Array.isArray(variant?.images) ? variant.images[0] : null,
     Array.isArray(product?.images) ? product.images[0] : null,
     product?.image,
   ];
@@ -115,7 +123,7 @@ exports.getCart = async (req, res) => {
 exports.addToCart = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { productId, quantity, customization, size, color } = req.body;
+    const { productId, quantity, customization, size, color, variantId } = req.body;
 
     const validation = validateCartItem({ productId, quantity });
     if (!validation.valid) {
@@ -138,31 +146,46 @@ exports.addToCart = async (req, res) => {
     // Robust duplicate check: normalize IDs (string) and sizes (trim) to prevent duplicates from type or whitespace differences
     const pid = String(productId || '');
     const sizeNorm = (size || '').toString().trim();
-    const colorNorm = normalizeColor(color);
+    const variant = findVariant(product, { variantId, color });
+    const colorNorm = variant?.colorName || normalizeColor(color);
+    const colorHex = variant?.colorHex || (typeof color === 'object' ? color.hex || color.colorHex || '' : '') || '';
+    const resolvedVariantId = variant?.id || variantId || null;
     const custNorm = JSON.stringify(customization || null);
+    const qty = Number(quantity) || 1;
+
+    if (variant && !isVariantInStock(variant, sizeNorm, qty)) {
+      return res.status(400).json({
+        success: false,
+        message: `${colorNorm} is out of stock${sizeNorm ? ` for size ${sizeNorm}` : ''}`,
+      });
+    }
 
     const existingItem = cart.items.find(item => {
       const itemPid = String(item.productId || item.id || '');
       const itemSize = (item.size || '').toString().trim();
       const itemColor = normalizeColor(item.color);
+      const itemVariant = item.variantId ? String(item.variantId) : '';
       const itemCust = JSON.stringify(item.customization || null);
+      const sameVariant = resolvedVariantId
+        ? itemVariant === String(resolvedVariantId)
+        : itemColor === colorNorm;
       return itemPid === pid &&
              itemSize === sizeNorm &&
-             itemColor === colorNorm &&
+             sameVariant &&
              itemCust === custNorm;
     });
 
     if (existingItem) {
       return res.json({
         success: false,
-        message: 'This item with the selected size is already in your cart.',
+        message: 'This item with the selected size and color is already in your cart.',
         isDuplicate: true,
         data: cart
       });
     }
 
-    // Prefer server product data over client payload (avoids bad prices / huge base64 images)
-    const unitPrice = Number(product.price ?? req.body.price);
+    // Prefer server product / variant price over client payload
+    const unitPrice = resolveVariantPrice(product, variant);
     if (!Number.isFinite(unitPrice) || unitPrice < 0) {
       return res.status(400).json({
         success: false,
@@ -170,16 +193,21 @@ exports.addToCart = async (req, res) => {
       });
     }
 
-    const qty = Number(quantity) || 1;
+    const lineSku = variant?.sku
+      ? (sizeNorm ? `${variant.sku}-${sizeNorm}` : variant.sku)
+      : '';
 
     cart.items.push({
       id: `${productId}_${Date.now()}`,
       productId: pid,
       name: product.name || req.body.name || 'Product',
-      image: resolveCartImage(product, req.body.image),
+      image: resolveCartImage(product, req.body.image, variant),
       quantity: qty,
       size: sizeNorm,
       color: colorNorm,
+      colorHex,
+      variantId: resolvedVariantId,
+      sku: lineSku || undefined,
       price: unitPrice,
       customization: customization || null,
       addedAt: new Date().toISOString()

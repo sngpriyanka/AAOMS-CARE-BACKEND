@@ -8,7 +8,14 @@ const {
   toPublicUrl,
   cleanupRemovedProductImages,
   cleanupAllProductImages,
+  cleanupRemovedMedia,
 } = require('../utils/localUpload');
+const {
+  normalizeVariants,
+  variantsToLegacyColors,
+  collectVariantImagePaths,
+  productHasColor,
+} = require('../utils/productVariants');
 const { v4: uuidv4 } = require('uuid');
 const PRODUCTS_COLLECTION = 'products';
 
@@ -25,10 +32,31 @@ const expandProductMedia = (product, req) => {
     ? product.images.map(expand).filter(Boolean)
     : [];
   const image = expand(product.image) || images[0] || '';
+
+  const variants = Array.isArray(product.variants)
+    ? product.variants.map((v) => {
+        if (!v || typeof v !== 'object') return v;
+        const vImages = Array.isArray(v.images)
+          ? v.images.map(expand).filter(Boolean)
+          : [];
+        return { ...v, images: vImages };
+      })
+    : [];
+
+  // Ensure colors mirror active variants for older clients
+  const colors =
+    variants.length > 0
+      ? variantsToLegacyColors(variants)
+      : Array.isArray(product.colors)
+        ? product.colors
+        : [];
+
   return {
     ...product,
     image,
     images: images.length ? images : (image ? [image] : []),
+    variants,
+    colors,
   };
 };
 
@@ -86,6 +114,21 @@ const normalizeProductPayload = (body, existingProduct = null) => {
     ? { tagline: body.description, details: body.description }
     : (body.description || {});
 
+  const finalImages = images.length ? images : (image ? [image] : []);
+  const variants = normalizeVariants(body, existingProduct, finalImages);
+
+  // Prefer first active variant images as product gallery when product-level images empty
+  const firstActiveWithImages = variants.find(
+    (v) => v.active !== false && Array.isArray(v.images) && v.images.length
+  );
+  const primaryImages =
+    finalImages.length > 0
+      ? finalImages
+      : firstActiveWithImages
+        ? firstActiveWithImages.images
+        : [];
+  const primaryImage = image || primaryImages[0] || '';
+
   // Explicitly build clean payload - do NOT spread ...body as it can bring UI-only fields
   // like 'status', 'sales', 'createdAt' (from frontend forms) which don't exist as DB columns
   // and cause Postgres INSERT 500 errors on create/update.
@@ -98,10 +141,15 @@ const normalizeProductPayload = (body, existingProduct = null) => {
     subDescription: body.subDescription || '',
     productInformation: body.productInformation || '',
     category: typeof body.category === 'string' ? body.category.trim() : '',
-    image,
-    images: images.length ? images : (image ? [image] : []),
+    image: primaryImage,
+    images: primaryImages.length ? primaryImages : (primaryImage ? [primaryImage] : []),
     sizes: Array.isArray(body.sizes) ? body.sizes : String(body.sizes || '').split(',').map(s => s.trim()).filter(Boolean),
-    colors: Array.isArray(body.colors) ? body.colors : String(body.colors || '').split(',').map(c => c.trim()).filter(Boolean),
+    colors: variants.length
+      ? variantsToLegacyColors(variants)
+      : (Array.isArray(body.colors)
+          ? body.colors
+          : String(body.colors || '').split(',').map(c => c.trim()).filter(Boolean)),
+    variants,
     sizeChart: body.sizeChart
       ? (typeof body.sizeChart === 'string' ? (() => { try { return JSON.parse(body.sizeChart); } catch { return null; } })() : body.sizeChart)
       : null,
@@ -110,7 +158,7 @@ const normalizeProductPayload = (body, existingProduct = null) => {
   };
 };
 
-const filterProductsInMemory = (products, { category, minPrice, maxPrice, search, excludeId, view }) => {
+const filterProductsInMemory = (products, { category, minPrice, maxPrice, search, excludeId, view, color }) => {
   let next = view === 'admin' ? products : products.filter(p => p.isActive !== false);
 
   if (category) {
@@ -131,8 +179,13 @@ const filterProductsInMemory = (products, { category, minPrice, maxPrice, search
     const searchLower = search.toLowerCase();
     next = next.filter(p =>
       p.name.toLowerCase().includes(searchLower) ||
-      (p.description && p.description.tagline && p.description.tagline.toLowerCase().includes(searchLower))
+      (p.description && p.description.tagline && p.description.tagline.toLowerCase().includes(searchLower)) ||
+      (Array.isArray(p.variants) && p.variants.some(v => String(v.colorName || '').toLowerCase().includes(searchLower)))
     );
+  }
+
+  if (color && color !== 'all') {
+    next = next.filter((p) => productHasColor(p, color));
   }
 
   if (excludeId) {
@@ -144,9 +197,30 @@ const filterProductsInMemory = (products, { category, minPrice, maxPrice, search
 
 exports.getAllProducts = async (req, res) => {
   try {
-    const { category, minPrice, maxPrice, search, page = 1, limit = 10, excludeId, view } = req.query;
+    const { category, minPrice, maxPrice, search, page = 1, limit = 10, excludeId, view, color } = req.query;
     const pageNum = Math.max(parseInt(page, 10) || 1, 1);
     const limitNum = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);
+    const colorFilter = color && color !== 'all' ? String(color).trim() : '';
+
+    // When filtering by color, load a wider page then filter in memory (variants JSONB)
+    if (colorFilter) {
+      let products = await Database.readAll(PRODUCTS_COLLECTION);
+      products = filterProductsInMemory(products, {
+        category, minPrice, maxPrice, search, excludeId, view, color: colorFilter,
+      });
+      const skip = (pageNum - 1) * limitNum;
+      const paginatedProducts = products.slice(skip, skip + limitNum);
+      return res.json({
+        success: true,
+        data: expandProductsMedia(paginatedProducts, req),
+        pagination: {
+          total: products.length,
+          page: pageNum,
+          limit: limitNum,
+          pages: Math.ceil(products.length / limitNum) || 1,
+        },
+      });
+    }
 
     const pgResult = await Database.readProductsFiltered({
       categories: category ? getMatchingCategories(category) : undefined,
@@ -268,14 +342,50 @@ exports.createProduct = async (req, res) => {
       });
     }
 
+    // Ensure variants column exists (older DBs / first deploy)
+    try {
+      const { getPool } = require('../models/postgres');
+      const pool = getPool && getPool();
+      if (pool) {
+        await pool.query(
+          `ALTER TABLE products ADD COLUMN IF NOT EXISTS variants JSONB DEFAULT '[]'`
+        );
+      }
+    } catch (migErr) {
+      console.warn('variants column ensure warning:', migErr.message);
+    }
+
     const id = uuidv4();
     const newProduct = await Database.create(PRODUCTS_COLLECTION, {
-      ...payload,
+      name: payload.name,
+      slug: payload.slug,
+      price: payload.price,
+      originalPrice: payload.originalPrice,
+      description: payload.description,
+      subDescription: payload.subDescription,
+      productInformation: payload.productInformation,
+      category: payload.category,
+      image: payload.image,
+      images: payload.images,
+      sizes: payload.sizes,
+      colors: payload.colors,
+      variants: Array.isArray(payload.variants) ? payload.variants : [],
+      sizeChart: payload.sizeChart,
+      quickDry: !!payload.quickDry,
+      isActive: payload.isActive !== false,
       id,
       _id: id,
-      createdBy: req.user.id,
-      createdAt: new Date().toISOString()
+      createdBy: req.user?.id || req.user?._id || null,
+      createdAt: new Date().toISOString(),
     });
+
+    if (!newProduct) {
+      return res.status(500).json({
+        success: false,
+        message: 'Error creating product',
+        error: 'Database returned empty result',
+      });
+    }
 
     res.status(201).json({
       success: true,
@@ -283,9 +393,21 @@ exports.createProduct = async (req, res) => {
       data: expandProductMedia(newProduct, req)
     });
   } catch (error) {
+    console.error('createProduct error:', error.message);
+    if (error.stack) console.error(error.stack);
+    // Friendlier messages for common Postgres failures
+    let message = 'Error creating product';
+    if (/variants/i.test(error.message || '')) {
+      message =
+        'Database missing variants column. Run: node scripts/ensure-variants-column.js then restart the server.';
+    } else if (/duplicate key|unique/i.test(error.message || '')) {
+      message = 'A product with this slug already exists. Try a different name.';
+    } else if (/column .* does not exist/i.test(error.message || '')) {
+      message = `Database schema mismatch: ${error.message}`;
+    }
     res.status(500).json({
       success: false,
-      message: 'Error creating product',
+      message,
       error: error.message
     });
   }
@@ -312,9 +434,37 @@ exports.updateProduct = async (req, res) => {
 
     const payload = normalizeProductPayload(req.body, existingProduct);
 
+    // Ensure variants column exists before update
+    try {
+      const { getPool } = require('../models/postgres');
+      const pool = getPool && getPool();
+      if (pool) {
+        await pool.query(
+          `ALTER TABLE products ADD COLUMN IF NOT EXISTS variants JSONB DEFAULT '[]'`
+        );
+      }
+    } catch (migErr) {
+      console.warn('variants column ensure warning:', migErr.message);
+    }
+
     const updated = await Database.update(PRODUCTS_COLLECTION, id, {
-      ...payload,
-      updatedAt: new Date().toISOString()
+      name: payload.name,
+      slug: payload.slug,
+      price: payload.price,
+      originalPrice: payload.originalPrice,
+      description: payload.description,
+      subDescription: payload.subDescription,
+      productInformation: payload.productInformation,
+      category: payload.category,
+      image: payload.image,
+      images: payload.images,
+      sizes: payload.sizes,
+      colors: payload.colors,
+      variants: Array.isArray(payload.variants) ? payload.variants : [],
+      sizeChart: payload.sizeChart,
+      quickDry: !!payload.quickDry,
+      isActive: payload.isActive !== false,
+      updatedAt: new Date().toISOString(),
     });
 
     if (!updated) {
@@ -327,6 +477,9 @@ exports.updateProduct = async (req, res) => {
     // After successful DB update, remove replaced/dropped local product images from disk
     try {
       cleanupRemovedProductImages(existingProduct, payload.images);
+      const prevVariantImgs = collectVariantImagePaths(existingProduct);
+      const nextVariantImgs = collectVariantImagePaths(payload);
+      cleanupRemovedMedia(prevVariantImgs, nextVariantImgs);
     } catch (cleanupErr) {
       console.warn('Product image cleanup warning:', cleanupErr.message);
     }
