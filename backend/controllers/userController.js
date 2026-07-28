@@ -223,7 +223,12 @@ exports.updateUserProfile = async (req, res) => {
           isLocalUploadPath(oldStored) &&
           oldStored !== newStored
         ) {
-          deleteLocalFile(oldStored);
+          // --- Cloudinary delete (COMMENTED OUT — do not remove) ---
+          // const { deleteFromCloudinary } = require('../utils/cloudinaryConfig');
+          // if (oldStored) await deleteFromCloudinary(oldStored);
+
+          // --- Local disk delete (ACTIVE) ---
+          deleteLocalFile(oldStored); // fs.unlink when /uploads/profile/...
         }
       } catch (e) {
         console.warn('Profile picture cleanup warning:', e.message);

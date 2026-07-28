@@ -9,6 +9,8 @@ const {
   cleanupRemovedProductImages,
   cleanupAllProductImages,
   cleanupRemovedMedia,
+  deleteLocalFile,
+  isLocalUploadPath,
 } = require('../utils/localUpload');
 const {
   normalizeVariants,
@@ -527,7 +529,17 @@ exports.deleteProduct = async (req, res) => {
 
     // Delete local product image files from disk (non-blocking failure)
     try {
+      // --- Cloudinary delete (COMMENTED OUT — do not remove) ---
+      // const { deleteFromCloudinary } = require('../utils/cloudinaryConfig');
+      // for (const publicId of product.cloudinaryPublicIds || []) {
+      //   await deleteFromCloudinary(publicId);
+      // }
+
+      // --- Local disk delete (ACTIVE) — fs.unlink for /uploads/products/... (+ variant images)
       cleanupAllProductImages(product);
+      collectVariantImagePaths(product).forEach((p) => {
+        if (isLocalUploadPath(p)) deleteLocalFile(p);
+      });
     } catch (cleanupErr) {
       console.warn('Product image file cleanup warning:', cleanupErr.message);
     }

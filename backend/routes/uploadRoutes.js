@@ -1,11 +1,21 @@
 /**
- * Upload Routes — all media → local HostingRaja disk (UPLOADS_DIR)
- * Cloudinary is not used.
+ * Upload Routes — ACTIVE: Multer diskStorage → local folders under UPLOADS_DIR
+ *
+ * Folders: profile, products, categories, videos, banners, testimonials, gallery, documents
+ * DB stores relative paths: /uploads/<folder>/<filename>
+ *
+ * Cloudinary middleware was previously:
+ *   // const { upload } = require('../utils/cloudinaryConfig');
+ *   // router.post('/product-image', protect, adminOnly, upload.single('file'), ...)
+ * Full Cloudinary implementation is commented in utils/cloudinaryConfig.js (do not delete).
  */
 
 const express = require('express');
 const router = express.Router();
+// ACTIVE: per-folder Multer disk uploaders (local storage)
 const { createUploader, setUploadFolder } = require('../utils/localUpload');
+// COMMENTED: Cloudinary multer (memoryStorage) — re-enable via cloudinaryConfig if needed
+// const { upload } = require('../utils/cloudinaryConfig');
 const { protect, adminOnly } = require('../middleware/roleMiddleware');
 const uploadController = require('../controllers/uploadController');
 
@@ -18,8 +28,9 @@ const testimonialImages = createUploader('testimonials', {
   maxSizeMb: 5,
   imagesOnly: true,
 });
-// Generic: images/videos/pdf → gallery (videos route uses videos folder when dedicated)
+// Generic: images/videos/pdf → gallery (or documents for PDF via controller logic)
 const genericFiles = createUploader('gallery', { maxSizeMb: 50 });
+const documentFiles = createUploader('documents', { maxSizeMb: 50 });
 
 /**
  * GET /api/upload/status
@@ -30,11 +41,25 @@ router.get('/status', uploadController.getUploadStatus);
 /**
  * POST /api/upload/file
  * Generic gallery upload (reviews, misc)
+ * // CLOUDINARY (commented): upload.single('file') from memoryStorage
  */
 router.post(
   '/file',
   setUploadFolder('gallery'),
   genericFiles.single('file'),
+  uploadController.uploadFile
+);
+
+/**
+ * POST /api/upload/document
+ * PDF / document uploads → uploads/documents
+ */
+router.post(
+  '/document',
+  protect,
+  adminOnly,
+  setUploadFolder('documents'),
+  documentFiles.single('file'),
   uploadController.uploadFile
 );
 

@@ -250,8 +250,13 @@ exports.deleteTestimonial = async (req, res) => {
     await Database.delete(COLLECTION, req.params.id);
 
     try {
+      // --- Cloudinary delete (COMMENTED OUT — do not remove) ---
+      // const { deleteFromCloudinary } = require('../utils/cloudinaryConfig');
+      // if (existing.publicId) await deleteFromCloudinary(existing.publicId);
+
+      // --- Local disk delete (ACTIVE) ---
       const img = existing.image || existing.publicId;
-      if (img && isLocalUploadPath(img)) deleteLocalFile(img);
+      if (img && isLocalUploadPath(img)) deleteLocalFile(img); // fs.unlink for /uploads/...
     } catch (e) {
       console.warn('Testimonial file cleanup warning:', e.message);
     }

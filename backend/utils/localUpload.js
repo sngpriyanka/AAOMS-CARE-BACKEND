@@ -1,15 +1,17 @@
 /**
- * Local disk upload helpers (Multer) for HostingRaja / self-hosted deployments.
+ * Local disk upload helpers (Multer diskStorage) — ACTIVE media path.
  *
- * HostingRaja production:
- *   UPLOADS_DIR=~/aaoms-data/uploads
- *   → ~/aaoms-data/uploads/{profile,products,videos,banners,testimonials,gallery,documents}
+ * Cloudinary alternative is fully preserved as comments in utils/cloudinaryConfig.js.
+ *
+ * Production (VPS / HostingRaja):
+ *   UPLOADS_DIR=~/aaoms-data/uploads  or absolute path
+ *   → {profile,products,categories,videos,banners,testimonials,gallery,documents}
  *
  * Local development:
- *   UPLOADS_DIR=uploads  (relative to backend/)
+ *   UPLOADS_DIR=uploads  (relative to backend/) — folders auto-created
  *
  * PostgreSQL stores ONLY relative web paths: /uploads/<folder>/<filename>
- * Express serves them at GET /uploads/...
+ * Express serves them at GET /uploads/... (see server.js express.static)
  */
 
 const path = require('path');

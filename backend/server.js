@@ -122,8 +122,15 @@ app.use(cors({
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
-// ==================== Local uploads (Multer disk → HostingRaja / local) ====================
-// UPLOADS_DIR env: ~/aaoms-data/uploads (production) or uploads (local)
+// ==================== Local uploads (Multer disk → local / VPS) ====================
+// Cloudinary was previously used for media; its code is COMMENTED (not deleted)
+// in utils/cloudinaryConfig.js so it can be re-enabled later.
+//
+// UPLOADS_DIR env:
+//   Local:  uploads  (→ backend/uploads)
+//   VPS:    /var/www/.../aaoms-data/uploads  or  ~/aaoms-data/uploads
+// Folders auto-created: profile, products, categories, videos, banners,
+//   testimonials, gallery, documents
 // Served at GET /uploads/... BEFORE React SPA catch-all
 const path = require('path');
 const { UPLOADS_ROOT, ensureUploadTree, DEFAULT_SUBDIRS } = require('./utils/localUpload');
@@ -142,7 +149,7 @@ console.log(`   Subfolders: ${DEFAULT_SUBDIRS.join(', ')}`);
 console.log(`   Public URL prefix: /uploads  (BACKEND_PUBLIC_URL=${process.env.BACKEND_PUBLIC_URL || '(request host)'})`);
 if (!process.env.UPLOADS_DIR) {
   console.warn(
-    '⚠️  UPLOADS_DIR not set — using backend/uploads. On HostingRaja set UPLOADS_DIR=~/aaoms-data/uploads'
+    '⚠️  UPLOADS_DIR not set — using backend/uploads. On VPS set UPLOADS_DIR to absolute path (e.g. $HOME/aaoms-data/uploads)'
   );
 }
 

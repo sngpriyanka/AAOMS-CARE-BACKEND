@@ -1,11 +1,19 @@
 /**
- * Upload Controller — local disk only (HostingRaja ~/aaoms-data/uploads/...)
- * Cloudinary is disabled. All uploads write to UPLOADS_DIR subfolders.
- * PostgreSQL should store data.path (relative /uploads/...).
+ * Upload Controller — ACTIVE: local Multer disk (req.file / req.files).
+ * PostgreSQL stores data.path (relative /uploads/<folder>/<filename>).
+ *
+ * Cloudinary upload/delete helpers are COMMENTED OUT (not deleted).
+ * Original pattern (for re-enable):
+ *   // const { uploadToCloudinary, uploadMultipleToCloudinary, deleteFromCloudinary } =
+ *   //   require('../utils/cloudinaryConfig');
+ *   // const result = await uploadToCloudinary(req.file.buffer, name, 'aaxoms/products', 'image');
+ *   // data: { url: result.secure_url, publicId: result.public_id }
+ * Full Cloudinary source remains in utils/cloudinaryConfig.js as comments.
  */
 
 const fs = require('fs');
 const path = require('path');
+// ACTIVE local helpers
 const {
   fileToUploadResult,
   deleteLocalFile,
@@ -15,6 +23,12 @@ const {
   DEFAULT_SUBDIRS,
   getUploadsRoot,
 } = require('../utils/localUpload');
+// COMMENTED: Cloudinary helpers (do not delete — re-enable in cloudinaryConfig.js)
+// const {
+//   uploadToCloudinary,
+//   uploadMultipleToCloudinary,
+//   deleteFromCloudinary,
+// } = require('../utils/cloudinaryConfig');
 
 /**
  * GET /api/upload/status
@@ -511,16 +525,22 @@ const deleteFile = async (req, res) => {
 
     const pathValue = raw.startsWith('uploads/') ? `/${raw}` : raw;
 
+    // --- Cloudinary delete (COMMENTED OUT — do not remove) ---
+    // const result = await deleteFromCloudinary(publicId);
+    // return res.json({ success: true, message: 'File deleted successfully', data: result });
+
+    // --- Local disk delete (ACTIVE) ---
     if (!isLocalUploadPath(pathValue) && !pathValue.startsWith('/uploads/')) {
-      // Ignore legacy Cloudinary public IDs — nothing to delete on disk
+      // Legacy Cloudinary public_id or external URL — nothing on disk
       return res.json({
         success: true,
         message:
-          'Not a local upload path; nothing deleted on server (legacy/external URL)',
+          'Not a local upload path; nothing deleted on server (legacy/external URL). Cloudinary delete is commented out.',
         data: { path: pathValue, deleted: false, skipped: true },
       });
     }
 
+    // fs.unlinkSync under the hood (path-safe) via deleteLocalFile
     const deleted = deleteLocalFile(pathValue);
     return res.json({
       success: true,

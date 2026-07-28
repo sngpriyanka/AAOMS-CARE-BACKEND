@@ -221,8 +221,13 @@ exports.deleteBanner = async (req, res) => {
 
     if (existing) {
       try {
+        // --- Cloudinary delete (COMMENTED OUT — do not remove) ---
+        // const { deleteFromCloudinary } = require('../utils/cloudinaryConfig');
+        // if (existing.publicId) await deleteFromCloudinary(existing.publicId);
+
+        // --- Local disk delete (ACTIVE) ---
         collectPathsFromFields(existing, ['url', 'images', 'publicId']).forEach((p) => {
-          if (isLocalUploadPath(p)) deleteLocalFile(p);
+          if (isLocalUploadPath(p)) deleteLocalFile(p); // fs.unlink when path is under /uploads
         });
       } catch (e) {
         console.warn('Banner file cleanup warning:', e.message);
