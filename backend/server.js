@@ -97,11 +97,15 @@ app.use(cors({
       'http://localhost:3000',
       'http://localhost:5000',
       'http://localhost:5173',
-      'https://aaoms-care-frontend.vercel.app',     // ← Your Vercel Frontend
-      'https://aaoms-care-backend.onrender.com',            // Backend itself (if needed)
+      'https://aaoms.co.in',
+      'https://www.aaoms.co.in',
+      'http://aaoms.co.in',
+      'http://www.aaoms.co.in',
+      'https://aaoms-care-frontend.vercel.app',
+      'https://aaoms-care-backend.onrender.com',
       'https://aaoms.online',
-    'https://www.aaoms.online',          
-      process.env.FRONTEND_URL
+      'https://www.aaoms.online',
+      process.env.FRONTEND_URL,
     ].filter(Boolean);
 
     if (!origin || allowedOrigins.includes(origin)) {

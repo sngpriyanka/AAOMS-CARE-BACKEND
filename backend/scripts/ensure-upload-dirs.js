@@ -44,6 +44,7 @@ try {
 console.log('');
 console.log('Set in .env:');
 console.log(`  UPLOADS_DIR=${process.env.UPLOADS_DIR || root}`);
-console.log('  BACKEND_PUBLIC_URL=https://your-domain.com');
+console.log('  BACKEND_PUBLIC_URL=https://aaoms.co.in');
+console.log('  FRONTEND_URL=https://aaoms.co.in');
 console.log('');
 console.log('Resolved root (same as runtime):', getUploadsRoot());
